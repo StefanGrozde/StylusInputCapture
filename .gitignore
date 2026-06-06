@@ -1,0 +1,4 @@
+/target
+
+# Keep Cargo.lock for the binary crate
+# (do NOT add Cargo.lock here)

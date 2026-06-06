@@ -1,0 +1,31 @@
+[package]
+name = "tablet-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tablet-cli"
+path = "src/main.rs"
+
+[features]
+default = []
+backend-evdev = ["dep:tablet-evdev", "tablet-evdev/backend-evdev"]
+backend-macos = ["dep:tablet-macos", "tablet-macos/backend-macos"]
+backend-wintab = ["dep:tablet-wintab"]
+
+[dependencies]
+clap = { version = "4.6.1", features = ["derive"] }
+ctrlc = "3.5.2"
+rtrb = "0.3.4"
+serde = { version = "1.0.228", features = ["derive"] }
+tablet-core = { version = "0.1.0", path = "../tablet-core" }
+tablet-evdev = { version = "0.1.0", path = "../tablet-evdev", optional = true }
+tablet-macos = { version = "0.1.0", path = "../tablet-macos", optional = true }
+tablet-stream = { version = "0.1.0", path = "../tablet-stream" }
+thiserror = "2.0.18"
+toml = "1.1.2"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+
+[target.'cfg(windows)'.dependencies]
+tablet-wintab = { version = "0.1.0", path = "../tablet-wintab", optional = true }

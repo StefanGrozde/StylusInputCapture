@@ -1,0 +1,24 @@
+[package]
+name = "tablet-wintab"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tablet-core = { version = "0.1.0", path = "../tablet-core" }
+thiserror = "2.0.18"
+tracing = "0.1.44"
+
+[target.'cfg(windows)'.dependencies]
+libloading = "0.9.0"
+# wintab_lite depends on windows 0.56; we activate Win32_Foundation so its
+# extern_function_types.rs can resolve windows::Win32::Foundation::HWND.
+windows = { version = "0.56", features = ["Win32_Foundation"] }
+wintab_lite = { version = "1.0.1", features = ["libloading"] }
+# windows-sys for Win32 windowing, message-loop, and QPC APIs used by T3.3.
+# Coexists with `windows = "0.56"` because they are different crates.
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Performance",
+    "Win32_Graphics_Gdi",
+] }

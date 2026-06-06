@@ -1,0 +1,11 @@
+[package]
+name = "tablet-evdev"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+backend-evdev = []
+
+[dependencies]
+tablet-core = { version = "0.1.0", path = "../tablet-core" }
