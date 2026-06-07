@@ -14,11 +14,11 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tablet_core::{SampleEvent, ToolKind};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HidP_GetUsageValue, HidP_GetUsages, HidP_Input,
 };
-use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Foundation::{GetLastError, HANDLE};
 use windows_sys::Win32::System::Performance::{
     QueryPerformanceCounter, QueryPerformanceFrequency,
 };
@@ -72,6 +72,11 @@ pub struct CaptureState {
     pub rate_emitted: bool,
     /// Handle of the device that last produced a report (for removal proximity).
     pub active_handle: isize,
+    /// Diagnostic counters (temporary bring-up instrumentation; one-shot logs).
+    pub dbg_wm_input: u64,
+    pub dbg_blocks: u64,
+    pub dbg_unknown: u64,
+    pub dbg_samples: u64,
 }
 
 impl CaptureState {
@@ -93,6 +98,10 @@ impl CaptureState {
             count_since_first: 0,
             rate_emitted: false,
             active_handle: 0,
+            dbg_wm_input: 0,
+            dbg_blocks: 0,
+            dbg_unknown: 0,
+            dbg_samples: 0,
         }
     }
 }
@@ -127,12 +136,21 @@ pub fn qpc_ns(freq: i64) -> u64 {
 
 /// Drain the entire Raw Input queue and decode every pending report.
 ///
+/// `hrawinput` is the `WM_INPUT` `lParam` (an `HRAWINPUT`), used for the
+/// single-read fallback if the batched `GetRawInputBuffer` path yields nothing.
+///
 /// One QPC timestamp is taken for the whole burst (SPEC_BGC §5.1). No allocation
 /// or I/O occurs here.
-pub fn handle_wm_input(state: &mut CaptureState) {
+pub fn handle_wm_input(state: &mut CaptureState, hrawinput: isize) {
     let now_ns = qpc_ns(state.qpc_freq);
     let header_size = std::mem::size_of::<RAWINPUTHEADER>() as u32;
 
+    state.dbg_wm_input += 1;
+    if state.dbg_wm_input == 1 {
+        info!("diag: first WM_INPUT received (registration is delivering)");
+    }
+
+    let mut total_blocks: u64 = 0;
     loop {
         let mut size = state.buf.len() as u32;
         // SAFETY: buffer is valid for `size` bytes; header_size is correct.
@@ -144,11 +162,16 @@ pub fn handle_wm_input(state: &mut CaptureState) {
             )
         };
         if count == 0 {
-            break; // queue empty
+            break; // buffered queue empty
         }
         if count == u32::MAX {
-            warn!("GetRawInputBuffer returned error; aborting this drain");
+            let err = unsafe { GetLastError() };
+            warn!(win32_error = err, "GetRawInputBuffer returned error; aborting this drain");
             break;
+        }
+        total_blocks += count as u64;
+        if state.dbg_wm_input <= 3 {
+            info!(blocks = count, "diag: GetRawInputBuffer drained blocks");
         }
 
         // Walk `count` packed RAWINPUT blocks.
@@ -161,12 +184,22 @@ pub fn handle_wm_input(state: &mut CaptureState) {
             }
         }
     }
+
+    // Fallback: if the buffered read yielded nothing for this WM_INPUT, read the
+    // single report directly. Some drivers / message-only window setups don't
+    // populate the buffered queue, so GetRawInputBuffer returns 0 even though a
+    // report is available via GetRawInputData(lParam).
+    if total_blocks == 0 && hrawinput != 0 {
+        if state.dbg_wm_input <= 3 {
+            info!("diag: buffered drain empty; using GetRawInputData single-read fallback");
+        }
+        handle_wm_input_single(state, hrawinput, now_ns);
+    }
 }
 
 /// Fallback single-report read via `GetRawInputData` for the `WM_INPUT` handle,
-/// used only if batched draining is unavailable.
-pub fn handle_wm_input_single(state: &mut CaptureState, hrawinput: isize) {
-    let now_ns = qpc_ns(state.qpc_freq);
+/// used only if batched draining is unavailable. `now_ns` is the burst timestamp.
+pub fn handle_wm_input_single(state: &mut CaptureState, hrawinput: isize, now_ns: u64) {
     let mut size = state.buf.len() as u32;
     let header_size = std::mem::size_of::<RAWINPUTHEADER>() as u32;
     // SAFETY: buffer valid for `size` bytes; RID_INPUT reads one record.
@@ -179,7 +212,12 @@ pub fn handle_wm_input_single(state: &mut CaptureState, hrawinput: isize) {
             header_size,
         )
     };
-    if written == 0 || written == u32::MAX {
+    if written == u32::MAX {
+        let err = unsafe { GetLastError() };
+        warn!(win32_error = err, "GetRawInputData single-read failed");
+        return;
+    }
+    if written == 0 {
         return;
     }
     // SAFETY: buffer now holds one valid RAWINPUT.
@@ -203,23 +241,51 @@ unsafe fn next_block(ptr: *const RAWINPUT) -> *const RAWINPUT {
 /// # Safety
 /// `raw` must point at a valid `RAWINPUT`.
 unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_ns: u64) {
-    if (*raw).header.dwType != RIM_TYPEHID {
+    state.dbg_blocks += 1;
+    let dwtype = (*raw).header.dwType;
+    let key = (*raw).header.hDevice;
+    if state.dbg_blocks <= 3 {
+        info!(dwtype, key, "diag: raw block header");
+    }
+    if dwtype != RIM_TYPEHID {
         return;
     }
-    let key = (*raw).header.hDevice;
+
+    // If we have no profile for this handle, the device delivering reports wasn't
+    // in the enumerated set (e.g. it appeared without a device-change message, or
+    // its top-level usage differed at enumeration). Try to build one lazily before
+    // giving up, so we don't silently drop a live pen.
+    if !state.profiles.contains_key(&key) {
+        match build_profile(key) {
+            Some(profile) => {
+                info!(key, name = %profile.caps.device_name, "diag: lazily built profile for reporting device");
+                state.profiles.insert(key, profile);
+            }
+            None => {
+                state.dbg_unknown += 1;
+                if state.dbg_unknown <= 3 {
+                    warn!(key, "diag: WM_INPUT for handle with no digitizer profile; dropping report");
+                }
+                return;
+            }
+        }
+    }
 
     // Borrow the profile only long enough to capture Copy/raw views, so the sink
     // (which mutably borrows `state`) doesn't conflict. The profile map is not
     // mutated during a drain, so the raw caps pointer stays valid.
     let (preparsed, caps_ptr): (isize, *const ProfileCaps) = match state.profiles.get(&key) {
         Some(p) => (p.preparsed_ptr(), &p.caps as *const _),
-        None => return, // unknown / non-digitizer HID device
+        None => return, // unreachable: just inserted above
     };
     let caps: &ProfileCaps = &*caps_ptr;
 
     let hid = &(*raw).data.hid;
     let size_hid = hid.dwSizeHid as usize;
     let count = hid.dwCount as usize;
+    if state.dbg_blocks <= 3 {
+        info!(size_hid, count, "diag: hid report dimensions");
+    }
     if size_hid == 0 || count == 0 {
         return;
     }
@@ -235,6 +301,17 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
         };
         state.serial = state.serial.wrapping_add(1);
         let sample = decode_report(&reader, caps, now_ns, state.serial);
+
+        state.dbg_samples += 1;
+        if state.dbg_samples <= 5 {
+            info!(
+                x = sample.x_raw,
+                y = sample.y_raw,
+                pressure = sample.pressure_raw,
+                in_proximity = sample.in_proximity,
+                "diag: decoded sample"
+            );
+        }
 
         emit_proximity_transition(state, key, sample.in_proximity, sample.tool_serial);
         state.active_handle = key;

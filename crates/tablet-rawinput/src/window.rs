@@ -49,8 +49,9 @@ unsafe extern "system" fn wnd_proc(
         WM_INPUT => {
             if !state_ptr.is_null() {
                 // SAFETY: pointer installed by the capture thread; only this
-                // (capture) thread runs this window's message loop.
-                handle_wm_input(&mut *state_ptr);
+                // (capture) thread runs this window's message loop. `lparam` is the
+                // HRAWINPUT for the single-read fallback.
+                handle_wm_input(&mut *state_ptr, lparam);
             }
             // INPUTSINK requires DefWindowProc to perform input cleanup.
             DefWindowProcW(hwnd, msg, wparam, lparam)

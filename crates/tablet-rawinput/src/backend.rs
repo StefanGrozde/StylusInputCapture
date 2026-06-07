@@ -152,6 +152,22 @@ fn capture_thread_main(
         let _ = ready_tx.send(Err(BackendError::NoDevice));
         return;
     }
+    info!(count = profiles.len(), "diag: enumerated HID digitizer profiles");
+    for (handle, profile) in &profiles {
+        let c = &profile.caps;
+        info!(
+            handle,
+            name = %c.device_name,
+            x = c.x.is_some(),
+            y = c.y.is_some(),
+            pressure = c.pressure.is_some(),
+            x_tilt = c.x_tilt.is_some(),
+            y_tilt = c.y_tilt.is_some(),
+            has_in_range = c.has_in_range,
+            has_tip = c.has_tip,
+            "diag: profile"
+        );
+    }
 
     // 3. Register Raw Input (INPUTSINK | DEVNOTIFY).
     if let Err(e) = register(hwnd) {
@@ -185,7 +201,9 @@ fn capture_thread_main(
     unsafe {
         let mut msg: MSG = std::mem::zeroed();
         loop {
-            let ret = GetMessageW(&mut msg, hwnd, 0, 0);
+            // NULL hwnd filter: pump every message for this thread (window *and*
+            // thread messages like WM_QUIT), not just ones whose hwnd == our window.
+            let ret = GetMessageW(&mut msg, 0, 0, 0);
             if ret == 0 {
                 debug!("WM_QUIT received");
                 break;
