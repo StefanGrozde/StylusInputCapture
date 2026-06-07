@@ -167,7 +167,7 @@ impl TabletBackend for MockBackend {
                 // Advance serial (by 2 on gap samples to simulate drop).
                 let gap = config
                     .gap_every
-                    .map(|n| n > 0 && idx > 0 && idx % n == 0)
+                    .map(|n| n > 0 && idx > 0 && idx.is_multiple_of(n))
                     .unwrap_or(false);
                 serial = serial.wrapping_add(if gap { 2 } else { 1 });
                 t_ns = t_ns.wrapping_add(5_000_000);

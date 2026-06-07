@@ -171,7 +171,7 @@ impl<R: Read> FrameReader<R> {
             .map_err(|_| StreamError::TruncatedFrame)?;
 
         // Validate magic.
-        if &header[0..4] != &MAGIC {
+        if header[0..4] != MAGIC {
             return Err(StreamError::BadMagic);
         }
 

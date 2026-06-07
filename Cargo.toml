@@ -7,4 +7,6 @@ members = [
     "crates/tablet-macos",
     "crates/tablet-stream",
     "crates/tablet-cli",
+    "crates/tablet-process",
+    "crates/tablet-ui",
 ]

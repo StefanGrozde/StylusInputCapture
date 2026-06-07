@@ -14,6 +14,11 @@ Build order: **Sprint 1** (workspace + `tablet-core`) → **Sprint 2**
 Dependency rule: a task is only eligible to run once every task in its
 **Depends on** list is `DONE`. Update statuses as work completes.
 
+> **Calibration & Visualization UI feature** (separate, builds on top of this
+> capture pipeline): see `SPEC_CUI.md` for the design and `TASKS_CUI.md` for its
+> task breakdown (Sprints C1–C3: `tablet-process` + `tablet-ui`). It adds two new
+> crates and does not modify the capture crates below.
+
 ---
 
 # Sprint 1 — Workspace & Core Types
