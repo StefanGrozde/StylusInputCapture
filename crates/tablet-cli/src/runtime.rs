@@ -84,7 +84,18 @@ fn install_shutdown_handler(shutdown: Arc<AtomicBool>) -> Result<(), RuntimeErro
 }
 
 fn build_backend(config: &Config) -> Box<dyn TabletBackend> {
-    #[cfg(all(windows, feature = "backend-wintab"))]
+    // Used by the Wintab and mock branches; the Raw Input branch needs no config.
+    let _ = &config;
+
+    // Raw Input is the default Windows capture path (SPEC_BGC): focus-independent,
+    // so capture continues while another app (a DAW) owns the foreground.
+    #[cfg(all(windows, feature = "backend-rawinput"))]
+    {
+        return Box::new(tablet_rawinput::RawInputBackend::new());
+    }
+
+    // Wintab is opt-in fallback only and cannot capture in the background.
+    #[cfg(all(windows, feature = "backend-wintab", not(feature = "backend-rawinput")))]
     {
         return Box::new(
             tablet_wintab::WintabBackend::new()
@@ -101,7 +112,9 @@ fn build_backend(config: &Config) -> Box<dyn TabletBackend> {
     }))
 }
 
-#[cfg(all(windows, feature = "backend-wintab"))]
+// Real threaded backends (Raw Input / Wintab) capture until shutdown is
+// requested, then are stopped.
+#[cfg(all(windows, any(feature = "backend-rawinput", feature = "backend-wintab")))]
 fn wait_for_backend(
     backend: &mut dyn TabletBackend,
     shutdown: &AtomicBool,
@@ -112,7 +125,7 @@ fn wait_for_backend(
     backend.stop()
 }
 
-#[cfg(not(all(windows, feature = "backend-wintab")))]
+#[cfg(not(all(windows, any(feature = "backend-rawinput", feature = "backend-wintab"))))]
 fn wait_for_backend(
     backend: &mut dyn TabletBackend,
     _shutdown: &AtomicBool,

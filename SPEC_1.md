@@ -237,6 +237,15 @@ pub struct DeviceCapabilities {
 
 ## 6. Wintab Backend Design (`tablet-wintab`)
 
+> **⚠️ Superseded for capture.** Wintab delivers `WT_PACKET` only to the
+> *foreground* application, so it cannot capture while another app (a DAW) owns
+> the foreground — the defining requirement of this project. The capture
+> mechanism has moved to a focus-independent **Raw Input + HID** backend
+> (`tablet-rawinput`); see **`SPEC_BGC.md`**, which supersedes this section.
+> `tablet-wintab` is retained behind the non-default `backend-wintab` feature for
+> reference/fallback only. Note in particular that §6.3's claim about `CXO_SYSTEM`
+> governing packet-delivery focus is incorrect (see `SPEC_BGC.md` §1).
+
 ### 6.1 Initialization sequence
 1. Load `Wintab32.dll` (via `libloading` or `raw-dylib`). If absent -> return a
    typed `BackendError::DriverMissing` with guidance to install the Wacom driver.

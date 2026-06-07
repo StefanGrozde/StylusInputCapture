@@ -2472,6 +2472,7 @@ dependencies = [
  "tablet-core",
  "tablet-evdev",
  "tablet-macos",
+ "tablet-rawinput",
  "tablet-stream",
  "tablet-wintab",
  "thiserror 2.0.18",
@@ -2512,6 +2513,16 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
+]
+
+[[package]]
+name = "tablet-rawinput"
+version = "0.1.0"
+dependencies = [
+ "tablet-core",
+ "thiserror 2.0.18",
+ "tracing",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

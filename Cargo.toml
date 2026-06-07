@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/tablet-core",
     "crates/tablet-wintab",
+    "crates/tablet-rawinput",
     "crates/tablet-evdev",
     "crates/tablet-macos",
     "crates/tablet-stream",

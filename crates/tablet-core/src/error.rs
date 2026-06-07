@@ -13,8 +13,16 @@ pub enum BackendError {
     )]
     DriverMissing,
 
-    /// No tablet device was enumerated by the driver.
-    #[error("No tablet device found. Ensure your Wacom tablet is connected and powered on.")]
+    /// No tablet device was enumerated.
+    ///
+    /// Under the Raw Input backend this also fires when no HID **digitizer**
+    /// collection is present — most often because "Use Windows Ink" is turned
+    /// off in Wacom Tablet Properties (SPEC_BGC §9).
+    #[error(
+        "No tablet device found. Ensure your Wacom tablet is connected and powered on, \
+        and that \"Use Windows Ink\" is enabled in Wacom Tablet Properties \
+        (required for the pen to present as a standard HID digitizer)."
+    )]
     NoDevice,
 
     /// WTOpen returned a null context handle.
@@ -36,6 +44,15 @@ pub enum BackendError {
     NotImplemented {
         /// The backend name, such as "evdev" or "macOS".
         backend: &'static str,
+    },
+
+    /// `RegisterRawInputDevices` failed (Raw Input backend, SPEC_BGC §4).
+    ///
+    /// Carries the underlying Win32 error code for diagnostics.
+    #[error("Failed to register for Raw Input (Win32 error {win32_error}).")]
+    RawInputRegistrationFailed {
+        /// The `GetLastError` value captured at the failure site.
+        win32_error: u32,
     },
 
     /// A transport-level I/O failure occurred.

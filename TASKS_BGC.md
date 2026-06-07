@@ -32,12 +32,12 @@ Dependency rule: a task is only eligible to run once every task in its
 
 # Sprint B — Background Capture (`tablet-rawinput`)
 Branch: `sprint-bgc-rawinput`
-Status: TODO
+Status: B1–B6 DONE (code complete, builds + tests pass on Windows); B7 manual hardware run pending
 
 ## Tasks
 
 ### B1 — Scaffold `tablet-rawinput` crate & message-only window
-Status: TODO
+Status: DONE
 Depends on: none
 
 **Context:**
@@ -77,7 +77,7 @@ methods return `BackendError::NotImplemented { backend: "rawinput" }` for now.
 ---
 
 ### B2 — Device enumeration & `DeviceCapabilities` from HID
-Status: TODO
+Status: DONE
 Depends on: B1
 
 **Context:**
@@ -122,7 +122,7 @@ text pointing at the Windows-Ink requirement (§9).
 ---
 
 ### B4 — HID report decode → `PenSample` (pure, unit-tested)
-Status: TODO
+Status: DONE
 Depends on: B2
 
 **Context:**
@@ -165,7 +165,7 @@ vendor usage supplies one.
 ---
 
 ### B3 — Raw Input registration, capture thread & lossless drain
-Status: TODO
+Status: DONE
 Depends on: B1, B2
 
 **Context:**
@@ -215,7 +215,7 @@ window, joins the thread.
 ---
 
 ### B5 — Lifecycle: hot-plug, proximity & clean shutdown
-Status: TODO
+Status: DONE
 Depends on: B3, B4
 
 **Context:**
@@ -248,7 +248,7 @@ tool_serial }` on transitions, matching the existing event contract.
 ---
 
 ### B6 — Wire into `tablet-cli`, diagnostics & metrics
-Status: TODO
+Status: DONE
 Depends on: B3, B4
 
 **Context:**
@@ -289,7 +289,7 @@ existing metrics path.
 ---
 
 ### B7 — Manual hardware validation (Windows + Wacom)
-Status: TODO
+Status: CHECKLIST READY (`docs/bgc-hardware-checklist.md`); manual hardware run pending
 Depends on: B6
 
 **Context:**

@@ -1,0 +1,27 @@
+[package]
+name = "tablet-rawinput"
+version = "0.1.0"
+edition = "2021"
+description = "Focus-independent Windows Raw Input + HID pen capture backend (SPEC_BGC)"
+
+[features]
+# Enables the live Windows Raw Input backend. Off by default so the crate (and
+# its pure decode tests) build on any OS; tablet-cli turns it on for Windows.
+default = []
+backend-rawinput = []
+
+[dependencies]
+tablet-core = { version = "0.1.0", path = "../tablet-core" }
+thiserror = "2.0.18"
+tracing = "0.1.44"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_System_Performance",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
+] }

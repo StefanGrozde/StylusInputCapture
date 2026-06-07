@@ -7,10 +7,16 @@ edition = "2021"
 name = "tablet-cli"
 path = "src/main.rs"
 
+# `backend-rawinput` is the default Windows capture path (SPEC_BGC). It pulls a
+# Windows-only optional dependency, so on non-Windows targets the feature is inert
+# (the dep isn't compiled) and the CLI falls back to the mock backend.
 [features]
-default = []
+default = ["backend-rawinput"]
+backend-rawinput = ["dep:tablet-rawinput", "tablet-rawinput/backend-rawinput"]
 backend-evdev = ["dep:tablet-evdev", "tablet-evdev/backend-evdev"]
 backend-macos = ["dep:tablet-macos", "tablet-macos/backend-macos"]
+# Deprecated for capture (SPEC_BGC §1): Wintab can't capture in the background.
+# Kept opt-in for reference/fallback only.
 backend-wintab = ["dep:tablet-wintab"]
 
 [dependencies]
@@ -28,4 +34,5 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
 
 [target.'cfg(windows)'.dependencies]
+tablet-rawinput = { version = "0.1.0", path = "../tablet-rawinput", optional = true }
 tablet-wintab = { version = "0.1.0", path = "../tablet-wintab", optional = true }
