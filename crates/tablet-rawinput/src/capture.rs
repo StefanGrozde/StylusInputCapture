@@ -14,7 +14,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use tablet_core::{SampleEvent, ToolKind};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
     HidP_GetUsageValue, HidP_GetUsages, HidP_Input,
 };
@@ -147,7 +147,7 @@ pub fn handle_wm_input(state: &mut CaptureState, hrawinput: isize) {
 
     state.dbg_wm_input += 1;
     if state.dbg_wm_input == 1 {
-        info!("diag: first WM_INPUT received (registration is delivering)");
+        debug!("diag: first WM_INPUT received (registration is delivering)");
     }
 
     let mut total_blocks: u64 = 0;
@@ -171,7 +171,7 @@ pub fn handle_wm_input(state: &mut CaptureState, hrawinput: isize) {
         }
         total_blocks += count as u64;
         if state.dbg_wm_input <= 3 {
-            info!(blocks = count, "diag: GetRawInputBuffer drained blocks");
+            debug!(blocks = count, "diag: GetRawInputBuffer drained blocks");
         }
 
         // Walk `count` packed RAWINPUT blocks.
@@ -191,7 +191,7 @@ pub fn handle_wm_input(state: &mut CaptureState, hrawinput: isize) {
     // report is available via GetRawInputData(lParam).
     if total_blocks == 0 && hrawinput != 0 {
         if state.dbg_wm_input <= 3 {
-            info!("diag: buffered drain empty; using GetRawInputData single-read fallback");
+            debug!("diag: buffered drain empty; using GetRawInputData single-read fallback");
         }
         handle_wm_input_single(state, hrawinput, now_ns);
     }
@@ -245,7 +245,7 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
     let dwtype = (*raw).header.dwType;
     let key = (*raw).header.hDevice;
     if state.dbg_blocks <= 3 {
-        info!(dwtype, key, "diag: raw block header");
+        debug!(dwtype, key, "diag: raw block header");
     }
     if dwtype != RIM_TYPEHID {
         return;
@@ -258,7 +258,7 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
     if !state.profiles.contains_key(&key) {
         match build_profile(key) {
             Some(profile) => {
-                info!(key, name = %profile.caps.device_name, "diag: lazily built profile for reporting device");
+                debug!(key, name = %profile.caps.device_name, "diag: lazily built profile for reporting device");
                 state.profiles.insert(key, profile);
             }
             None => {
@@ -284,7 +284,7 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
     let size_hid = hid.dwSizeHid as usize;
     let count = hid.dwCount as usize;
     if state.dbg_blocks <= 3 {
-        info!(size_hid, count, "diag: hid report dimensions");
+        debug!(size_hid, count, "diag: hid report dimensions");
     }
     if size_hid == 0 || count == 0 {
         return;
@@ -304,7 +304,7 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
 
         state.dbg_samples += 1;
         if state.dbg_samples <= 5 {
-            info!(
+            debug!(
                 x = sample.x_raw,
                 y = sample.y_raw,
                 pressure = sample.pressure_raw,

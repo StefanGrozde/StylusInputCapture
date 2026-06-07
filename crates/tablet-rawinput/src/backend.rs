@@ -152,10 +152,10 @@ fn capture_thread_main(
         let _ = ready_tx.send(Err(BackendError::NoDevice));
         return;
     }
-    info!(count = profiles.len(), "diag: enumerated HID digitizer profiles");
+    debug!(count = profiles.len(), "diag: enumerated HID digitizer profiles");
     for (handle, profile) in &profiles {
         let c = &profile.caps;
-        info!(
+        debug!(
             handle,
             name = %c.device_name,
             x = c.x.is_some(),
