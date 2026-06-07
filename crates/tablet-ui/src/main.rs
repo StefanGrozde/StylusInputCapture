@@ -26,7 +26,15 @@ fn main() -> eframe::Result<()> {
     // can fall back to `last_profile_path` when `--profile` was not given.
     let prefs = UiPrefs::load();
 
-    let mut viewport = egui::ViewportBuilder::default().with_title("Tablet Calibration UI");
+    // The layout stacks a left, right, and bottom panel around a central area
+    // that itself splits into two columns. If the window is too narrow the
+    // central area collapses to zero width and egui's `columns` underflows
+    // (`debug_assert` "Negative width"). A minimum inner size keeps the window
+    // above that degenerate point; a comfortable default seeds first launch.
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_title("Tablet Calibration UI")
+        .with_min_inner_size(egui::vec2(900.0, 600.0))
+        .with_inner_size(egui::vec2(1280.0, 820.0));
     if let Some((width, height)) = prefs.window_size {
         if width > 0.0 && height > 0.0 {
             viewport = viewport.with_inner_size(egui::vec2(width, height));

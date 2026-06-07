@@ -381,14 +381,14 @@ impl eframe::App for TabletUiApp {
                 .resizable(true)
                 .default_size(secondary_height)
                 .show_inside(ui, |ui| {
-                    ui.columns(2, |cols| {
-                        draw_pressure_panel(&mut cols[0], &mut self.profile.pressure, &self.trace_history);
-                        draw_orientation_panel(
-                            &mut cols[1],
-                            &self.trace_history,
-                            self.latest_capabilities.as_ref(),
-                        );
-                    });
+                    let trace_history = &self.trace_history;
+                    let pressure = &mut self.profile.pressure;
+                    let capabilities = self.latest_capabilities.as_ref();
+                    crate::panels::two_columns(
+                        ui,
+                        |ui| draw_pressure_panel(ui, pressure, trace_history),
+                        |ui| draw_orientation_panel(ui, trace_history, capabilities),
+                    );
                 });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {

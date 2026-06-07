@@ -15,13 +15,15 @@ pub fn draw_inspector_panel(
             return;
         };
 
-        ui.columns(2, |columns| {
-            columns[0].strong("raw PenSample");
+        crate::panels::two_columns(
+            ui,
+            |ui| {
+            ui.strong("raw PenSample");
             egui::Grid::new("raw_sample_fields")
                 .num_columns(2)
                 .spacing([10.0, 4.0])
                 .striped(true)
-                .show(&mut columns[0], |ui| {
+                .show(ui, |ui| {
                     raw_row(ui, "t_capture_ns", raw.t_capture_ns);
                     raw_row(ui, "t_device_ms", raw.t_device_ms);
                     raw_row(ui, "serial", raw.serial);
@@ -57,14 +59,15 @@ pub fn draw_inspector_panel(
                     raw_row(ui, "in_proximity", raw.in_proximity);
                     raw_row(ui, "status", format!("0x{:08x}", raw.status));
                 });
-
-            columns[1].strong("derived ProcessedSample");
+            },
+            |ui| {
+            ui.strong("derived ProcessedSample");
             if let Some(processed) = latest_processed {
                 egui::Grid::new("processed_sample_fields")
                     .num_columns(2)
                     .spacing([10.0, 4.0])
                     .striped(true)
-                    .show(&mut columns[1], |ui| {
+                    .show(ui, |ui| {
                         raw_row(ui, "raw retained", "yes");
                         raw_row(ui, "raw serial", processed.raw.serial);
                         raw_row(ui, "x", format!("{:.6}", processed.x));
@@ -79,9 +82,10 @@ pub fn draw_inspector_panel(
                         raw_row(ui, "out_of_range", processed.out_of_range);
                     });
             } else {
-                columns[1].label("waiting for capabilities");
+                ui.label("waiting for capabilities");
             }
-        });
+            },
+        );
     });
 }
 
