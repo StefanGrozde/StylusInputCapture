@@ -5,7 +5,9 @@ use egui_plot::{Bar, BarChart, Plot};
 use tablet_core::{PenSample, ToolKind};
 use tablet_stream::Metrics;
 
-use crate::{panels::trace::TraceHistory, source::SourceState};
+use tablet_consumer::SourceState;
+
+use crate::panels::trace::TraceHistory;
 
 const JITTER_BUCKETS: usize = 24;
 

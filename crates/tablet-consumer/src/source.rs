@@ -13,8 +13,18 @@ use std::{
 use tablet_core::{DeviceCapabilities, PenSample};
 use tablet_stream::{Format, FrameReader, Metrics, StreamError, StreamMessage};
 
-use crate::cli::Source;
 use crate::spawn::SpawnedProducer;
+
+/// Where a consumer reads the WCAP stream from.
+///
+/// `Tcp`/`Pipe` reconnect on EOF/error with exponential backoff; `Stdin`
+/// treats EOF as terminal (no reconnect) — see [`run_source`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    Stdin,
+    Tcp(String),
+    Pipe(String),
+}
 
 const DEFAULT_DISPLAY_CAPACITY: usize = 4096;
 

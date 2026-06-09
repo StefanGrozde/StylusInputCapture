@@ -1,18 +1,21 @@
+//! Command-line argument parsing for the MPE HUD.
+//!
+//! Mirrors `tablet-ui`'s hand-rolled parser (same `--tcp` / `--pipe` /
+//! `--format` / `--spawn` conventions) and adds `--profile` (a calibration
+//! profile to clean up the raw signal) and `--mapping` (a `*.midimap.toml`).
+
 use std::{env, ffi::OsString, path::PathBuf};
 
+use tablet_consumer::Source;
 use tablet_stream::Format;
-
-// `Source` now lives in the shared `tablet-consumer` crate (the stream reader
-// it drives moved there too). Re-exported so `Args` and the rest of the UI
-// keep referring to it as `crate::cli::Source` with no behavioural change.
-pub use tablet_consumer::Source;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Args {
     pub source: Source,
     pub format: Format,
-    pub profile: Option<PathBuf>,
     pub spawn: bool,
+    pub profile: Option<PathBuf>,
+    pub mapping: Option<PathBuf>,
 }
 
 impl Default for Args {
@@ -20,8 +23,9 @@ impl Default for Args {
         Self {
             source: Source::Stdin,
             format: Format::Postcard,
-            profile: None,
             spawn: false,
+            profile: None,
+            mapping: None,
         }
     }
 }
@@ -69,6 +73,7 @@ impl Args {
         while let Some(raw) = iter.next() {
             let arg = raw.into_string().map_err(|_| ParseError::NonUtf8Argument)?;
             match arg.as_str() {
+                "--stdin" => set_source(&mut parsed, Source::Stdin)?,
                 "--tcp" => {
                     let addr = next_value(&mut iter, "--tcp")?;
                     set_source(&mut parsed, Source::Tcp(addr))?;
@@ -82,18 +87,16 @@ impl Args {
                     parsed.format = parse_format(&value)?;
                 }
                 "--profile" => {
-                    let path = next_value(&mut iter, "--profile")?;
-                    parsed.profile = Some(PathBuf::from(path));
+                    parsed.profile = Some(PathBuf::from(next_value(&mut iter, "--profile")?));
                 }
-                "--spawn" => {
-                    parsed.spawn = true;
+                "--mapping" => {
+                    parsed.mapping = Some(PathBuf::from(next_value(&mut iter, "--mapping")?));
                 }
+                "--spawn" => parsed.spawn = true,
                 flag if flag.starts_with('-') => {
                     return Err(ParseError::UnknownFlag(flag.to_owned()));
                 }
-                other => {
-                    return Err(ParseError::UnexpectedArgument(other.to_owned()));
-                }
+                other => return Err(ParseError::UnexpectedArgument(other.to_owned())),
             }
         }
 
@@ -101,10 +104,7 @@ impl Args {
     }
 }
 
-fn next_value<I>(
-    iter: &mut std::iter::Peekable<I>,
-    flag: &'static str,
-) -> Result<String, ParseError>
+fn next_value<I>(iter: &mut std::iter::Peekable<I>, flag: &'static str) -> Result<String, ParseError>
 where
     I: Iterator<Item = OsString>,
 {
@@ -119,7 +119,9 @@ where
 }
 
 fn set_source(parsed: &mut Args, source: Source) -> Result<(), ParseError> {
-    if parsed.source != Source::Stdin {
+    // `--stdin` re-selecting stdin is a no-op; any other change away from a
+    // previously-set non-stdin source is a conflict.
+    if parsed.source != Source::Stdin && source != Source::Stdin && parsed.source != source {
         return Err(ParseError::ConflictingSources);
     }
     parsed.source = source;
@@ -141,65 +143,54 @@ pub fn format_label(format: Format) -> &'static str {
     }
 }
 
+pub fn source_label(source: &Source) -> String {
+    match source {
+        Source::Stdin => "stdin".to_owned(),
+        Source::Tcp(addr) => format!("tcp: {addr}"),
+        Source::Pipe(name) => format!("pipe: {name}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn defaults_to_stdin_postcard_without_profile_or_spawn() {
+    fn defaults_to_stdin_postcard() {
         let args = Args::parse_from(std::iter::empty::<&str>()).unwrap();
-
         assert_eq!(args.source, Source::Stdin);
         assert_eq!(args.format, Format::Postcard);
-        assert_eq!(args.profile, None);
         assert!(!args.spawn);
+        assert_eq!(args.profile, None);
+        assert_eq!(args.mapping, None);
     }
 
     #[test]
-    fn parses_tcp_json_profile_and_spawn() {
+    fn parses_tcp_mapping_and_spawn() {
         let args = Args::parse_from([
             "--tcp",
             "127.0.0.1:9123",
-            "--format",
-            "json",
-            "--profile",
-            "profile.cal.toml",
+            "--mapping",
+            "lead.midimap.toml",
             "--spawn",
         ])
         .unwrap();
-
         assert_eq!(args.source, Source::Tcp("127.0.0.1:9123".to_owned()));
-        assert_eq!(args.format, Format::Json);
-        assert_eq!(args.profile, Some(PathBuf::from("profile.cal.toml")));
+        assert_eq!(args.mapping, Some(PathBuf::from("lead.midimap.toml")));
         assert!(args.spawn);
     }
 
     #[test]
-    fn parses_pipe_postcard() {
-        let args = Args::parse_from(["--pipe", "wacom-capture", "--format", "postcard"]).unwrap();
-
-        assert_eq!(args.source, Source::Pipe("wacom-capture".to_owned()));
-        assert_eq!(args.format, Format::Postcard);
-    }
-
-    #[test]
-    fn rejects_unknown_flag() {
-        let error = Args::parse_from(["--unknown"]).unwrap_err();
-
-        assert_eq!(error, ParseError::UnknownFlag("--unknown".to_owned()));
-    }
-
-    #[test]
     fn rejects_conflicting_sources() {
-        let error = Args::parse_from(["--tcp", "127.0.0.1:9123", "--pipe", "wacom"]).unwrap_err();
-
-        assert_eq!(error, ParseError::ConflictingSources);
+        let err = Args::parse_from(["--tcp", "127.0.0.1:9123", "--pipe", "wacom"]).unwrap_err();
+        assert_eq!(err, ParseError::ConflictingSources);
     }
 
     #[test]
     fn rejects_invalid_format() {
-        let error = Args::parse_from(["--format", "yaml"]).unwrap_err();
-
-        assert_eq!(error, ParseError::InvalidFormat("yaml".to_owned()));
+        assert_eq!(
+            Args::parse_from(["--format", "yaml"]).unwrap_err(),
+            ParseError::InvalidFormat("yaml".to_owned())
+        );
     }
 }

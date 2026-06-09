@@ -1,0 +1,28 @@
+[package]
+name = "tablet-hud"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tablet-hud"
+path = "src/main.rs"
+
+[features]
+default = ["midi-out"]
+# `midi-out` pulls in `midir` (the live MIDI backend). Disable it
+# (`--no-default-features`) to build the HUD without any MIDI driver dependency
+# — useful on systems without ALSA dev headers (Linux) where the app is only
+# being compiled/tested, not played. On Windows/macOS the feature is cheap.
+midi-out = ["dep:midir"]
+
+[dependencies]
+eframe = { version = "0.34.3", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui = "0.34.3"
+midir = { version = "0.11.0", optional = true }
+serde = { version = "1.0.228", features = ["derive"] }
+tablet-consumer = { path = "../tablet-consumer" }
+tablet-core = { path = "../tablet-core" }
+tablet-midi = { path = "../tablet-midi" }
+tablet-process = { path = "../tablet-process" }
+tablet-stream = { path = "../tablet-stream" }
+toml = "1.1.2"

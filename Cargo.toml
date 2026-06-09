@@ -9,5 +9,8 @@ members = [
     "crates/tablet-stream",
     "crates/tablet-cli",
     "crates/tablet-process",
+    "crates/tablet-consumer",
+    "crates/tablet-midi",
     "crates/tablet-ui",
+    "crates/tablet-hud",
 ]

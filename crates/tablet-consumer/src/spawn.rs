@@ -127,7 +127,7 @@ fn passthrough_args(options: &SpawnOptions) -> Vec<OsString> {
 }
 
 /// Resolve the `tablet-cli` binary path: prefer the sibling of the running
-/// executable (same directory as `tablet-ui[.exe]`, the layout `cargo build`
+/// executable (same directory as the consumer binary, the layout `cargo build`
 /// produces for a workspace), falling back to a bare name resolved via `PATH`.
 fn resolve_tablet_cli_path() -> PathBuf {
     let exe_name = if cfg!(windows) {

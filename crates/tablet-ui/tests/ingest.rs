@@ -1,15 +1,6 @@
-#![allow(dead_code)]
-
 use std::io::Cursor;
 
-#[path = "../src/cli.rs"]
-mod cli;
-#[path = "../src/spawn.rs"]
-mod spawn;
-#[path = "../src/source.rs"]
-mod source;
-
-use source::{ingest_reader, ConnectionStatus, SharedSource};
+use tablet_consumer::{ingest_reader, ConnectionStatus, SharedSource};
 use tablet_core::{AxisInfo, AxisUnit, DeviceCapabilities, PenSample, ToolKind};
 use tablet_stream::{Format, FrameWriter, Metrics, StreamMessage};
 
