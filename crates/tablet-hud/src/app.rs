@@ -23,7 +23,8 @@ use tablet_consumer::{
 };
 use tablet_core::{DeviceCapabilities, PenSample};
 use tablet_midi::{
-    MidiEvent, MidiMapping, MpeEngine, NoteMode, ScaleKind, VelocitySource, PITCH_CLASS_NAMES,
+    is_root, pad_note, MidiEvent, MidiMapping, MpeEngine, NoteMode, Pad, ScaleKind, TiltAxis,
+    TiltCc, VelocitySource, PITCH_CLASS_NAMES,
 };
 use tablet_process::{CalibrationProfile, ProcessedSample, ProcessorState};
 use tablet_stream::{Format, StreamMessage};
@@ -368,9 +369,18 @@ impl HudApp {
                     ui.selectable_value(&mut self.mapping.key, pc as u8, *name);
                 }
             });
-        ui.add(egui::Slider::new(&mut self.mapping.low_note, 0..=96).text("low note"));
-        ui.add(egui::Slider::new(&mut self.mapping.span_notes, 1..=48).text("span (semitones)"));
-        ui.label("Note motion (what dragging sideways does)");
+        ui.add(egui::Slider::new(&mut self.mapping.low_note, 0..=96).text("low note (bottom-left pad)"));
+        ui.separator();
+
+        // ── Pad grid ──
+        ui.label("Pad grid");
+        ui.add(egui::Slider::new(&mut self.mapping.grid.rows, 1..=12).text("rows"));
+        ui.add(egui::Slider::new(&mut self.mapping.grid.cols, 1..=12).text("columns"));
+        ui.add(
+            egui::Slider::new(&mut self.mapping.grid.row_interval_degrees, 1..=7)
+                .text("row interval (scale degrees, 3 = in 4ths)"),
+        );
+        ui.label("Slide behavior (what sliding onto another pad does)");
         egui::ComboBox::from_id_salt("note_mode")
             .selected_text(self.mapping.mode.label())
             .show_ui(ui, |ui| {
@@ -395,15 +405,39 @@ impl HudApp {
 
         // ── Expression axes ──
         ui.label("Expression");
-        ui.checkbox(&mut self.mapping.y_to_cc74, "Y → CC74 (timbre)");
+        ui.add(
+            egui::Slider::new(&mut self.mapping.pad_bend_semitones, 0.0..=12.0)
+                .text("pad X → bend (semitones/half-pad)"),
+        );
+        ui.checkbox(&mut self.mapping.y_to_cc74, "pad Y → CC74 (slide/timbre)");
         ui.add_enabled(
             self.mapping.y_to_cc74,
-            egui::Checkbox::new(&mut self.mapping.y_invert, "invert Y (up = brighter)"),
+            egui::Checkbox::new(&mut self.mapping.y_invert, "invert (pad top = brighter)"),
         );
         ui.checkbox(
             &mut self.mapping.pressure_to_channel_pressure,
             "pressure → channel pressure",
         );
+        let mut tilt_enabled = self.mapping.tilt_cc.is_some();
+        if ui
+            .checkbox(&mut tilt_enabled, "tilt → CC (mod wheel by default)")
+            .changed()
+        {
+            self.mapping.tilt_cc = tilt_enabled.then_some(TiltCc {
+                controller: 1,
+                axis: TiltAxis::X,
+                range_deg: 60.0,
+            });
+        }
+        if let Some(tilt) = &mut self.mapping.tilt_cc {
+            ui.add(egui::Slider::new(&mut tilt.controller, 0..=127).text("controller"));
+            ui.horizontal(|ui| {
+                ui.label("axis");
+                ui.selectable_value(&mut tilt.axis, TiltAxis::X, "tilt X");
+                ui.selectable_value(&mut tilt.axis, TiltAxis::Y, "tilt Y");
+            });
+            ui.add(egui::Slider::new(&mut tilt.range_deg, 10.0..=90.0).text("full-scale tilt (°)"));
+        }
         ui.separator();
 
         // ── Velocity ──
@@ -533,58 +567,98 @@ impl HudApp {
             return;
         }
 
-        self.draw_note_lanes(&painter, rect, ui);
+        self.draw_pad_grid(&painter, rect, ui);
         self.draw_trail(&painter, rect);
         self.draw_cursor(&painter, rect);
     }
 
-    /// Vertical lanes for each in-scale note across X, with the sounding note
-    /// highlighted.
-    fn draw_note_lanes(&self, painter: &egui::Painter, rect: Rect, ui: &egui::Ui) {
-        let low = self.mapping.low_note;
-        let span = self.mapping.span_notes.max(1);
-        let intervals = self.mapping.scale.intervals();
-        let key = self.mapping.key % 12;
-        let active = self.engine.active_note();
-        let line_color = ui.visuals().widgets.noninteractive.bg_stroke.color;
-        let faint = Color32::from_rgba_unmultiplied(line_color.r(), line_color.g(), line_color.b(), 60);
+    /// The Push-style pad grid: one rounded square per note, root pads in the
+    /// accent color, and the sounding pad lit with a brightness that follows
+    /// the current pen pressure.
+    ///
+    /// The grid covers the whole surface rect with the same normalized→pixel
+    /// mapping as [`surface_pos`], so the pads drawn here are exactly the pads
+    /// the engine hit-tests.
+    fn draw_pad_grid(&self, painter: &egui::Painter, rect: Rect, ui: &egui::Ui) {
+        let rows = self.mapping.grid.rows.max(1);
+        let cols = self.mapping.grid.cols.max(1);
+        let cell_w = rect.width() / f32::from(cols);
+        let cell_h = rect.height() / f32::from(rows);
+        let gap = (cell_w.min(cell_h) * 0.06).clamp(1.0, 4.0);
+        let rounding = (cell_w.min(cell_h) * 0.12).clamp(2.0, 8.0);
+        let active_pad = self.engine.active_pad();
+        let pressure = self
+            .latest_processed
+            .as_ref()
+            .map(|p| p.pressure as f32)
+            .unwrap_or(0.0);
+        let show_labels = cell_w >= 34.0 && cell_h >= 22.0;
 
-        for offset in 0..=span {
-            let note = low as i32 + offset as i32;
-            if note > 127 {
-                break;
-            }
-            let pc = ((note - i32::from(key)).rem_euclid(12)) as u8;
-            if !intervals.contains(&pc) {
-                continue;
-            }
-            let t = f32::from(offset) / f32::from(span);
-            let x = rect.left() + t * rect.width();
-            let is_active = active == Some(note as u8);
-            let stroke_color = if is_active {
-                Color32::from_rgb(90, 200, 255)
-            } else {
-                faint
-            };
-            painter.line_segment(
-                [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())],
-                Stroke::new(if is_active { 2.5 } else { 1.0 }, stroke_color),
-            );
-            // Label root notes (C, or scale root) with their name + octave.
-            if pc == 0 || note as u8 == active.unwrap_or(255) {
-                let name = PITCH_CLASS_NAMES[(note.rem_euclid(12)) as usize];
-                let octave = note / 12 - 1; // MIDI: C4 = 60
-                painter.text(
-                    Pos2::new(x + 3.0, rect.bottom() - 4.0),
-                    Align2::LEFT_BOTTOM,
-                    format!("{name}{octave}"),
-                    FontId::proportional(11.0),
-                    if is_active {
-                        Color32::from_rgb(140, 220, 255)
-                    } else {
-                        ui.visuals().weak_text_color()
-                    },
-                );
+        for row in 0..rows {
+            for col in 0..cols {
+                let pad = Pad { row, col };
+                // Row 0 is the bottom row; screen Y grows downward.
+                let x0 = rect.left() + f32::from(col) * cell_w;
+                let y0 = rect.top() + f32::from(rows - 1 - row) * cell_h;
+                let cell = Rect::from_min_size(Pos2::new(x0, y0), Vec2::new(cell_w, cell_h))
+                    .shrink(gap * 0.5);
+
+                let note = pad_note(pad, &self.mapping);
+                let is_active = active_pad == Some(pad);
+                let root = is_root(pad, &self.mapping);
+
+                let (fill, stroke) = if note.is_none() {
+                    // Off the top of the MIDI range: dead pad.
+                    (
+                        Color32::from_rgb(18, 18, 20),
+                        Stroke::new(1.0, Color32::from_rgb(30, 30, 33)),
+                    )
+                } else if is_active {
+                    // Lit pad: brightness follows pressure.
+                    let lum = 120.0 + 135.0 * pressure.clamp(0.0, 1.0);
+                    (
+                        Color32::from_rgb(
+                            (lum * 0.45) as u8,
+                            (lum * 0.85) as u8,
+                            lum.min(255.0) as u8,
+                        ),
+                        Stroke::new(2.0, Color32::from_rgb(160, 230, 255)),
+                    )
+                } else if root {
+                    (
+                        Color32::from_rgb(38, 70, 110),
+                        Stroke::new(1.0, Color32::from_rgb(70, 120, 170)),
+                    )
+                } else {
+                    (
+                        Color32::from_rgb(42, 44, 50),
+                        Stroke::new(1.0, Color32::from_rgb(62, 65, 72)),
+                    )
+                };
+
+                painter.rect_filled(cell, rounding, fill);
+                painter.rect_stroke(cell, rounding, stroke, egui::StrokeKind::Inside);
+
+                if show_labels {
+                    if let Some(note) = note {
+                        let name = PITCH_CLASS_NAMES[usize::from(note % 12)];
+                        let octave = i32::from(note) / 12 - 1; // MIDI: C4 = 60
+                        let text_color = if is_active {
+                            Color32::from_rgb(10, 25, 35)
+                        } else if root {
+                            Color32::from_rgb(150, 195, 235)
+                        } else {
+                            ui.visuals().weak_text_color()
+                        };
+                        painter.text(
+                            Pos2::new(cell.left() + 5.0, cell.bottom() - 3.0),
+                            Align2::LEFT_BOTTOM,
+                            format!("{name}{octave}"),
+                            FontId::proportional(11.0),
+                            text_color,
+                        );
+                    }
+                }
             }
         }
     }
@@ -620,18 +694,6 @@ impl HudApp {
         let radius = 4.0 + 8.0 * processed.pressure as f32;
         painter.circle_stroke(pos, radius, Stroke::new(2.0, color));
         painter.circle_filled(pos, 2.0, color);
-
-        // Horizontal CC74 (timbre) reference line at the cursor's Y.
-        if self.mapping.y_to_cc74 {
-            let faint = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), 60);
-            painter.line_segment(
-                [
-                    Pos2::new(rect.left(), pos.y),
-                    Pos2::new(rect.right(), pos.y),
-                ],
-                Stroke::new(1.0, faint),
-            );
-        }
     }
 }
 

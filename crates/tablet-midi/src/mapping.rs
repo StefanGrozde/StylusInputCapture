@@ -46,6 +46,33 @@ impl MpeConfig {
     }
 }
 
+/// The pad-grid layout of the playing surface (Push-style).
+///
+/// The surface is a `rows × cols` grid of square pads, each sounding one
+/// in-scale note. Row 0 is the **bottom** row (low notes at the bottom, like a
+/// Push), and each row up is `row_interval_degrees` scale degrees higher than
+/// the pad below it — the Push default of 3 degrees is "in 4ths" for a
+/// 7-note scale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GridConfig {
+    /// Number of pad rows.
+    pub rows: u8,
+    /// Number of pad columns.
+    pub cols: u8,
+    /// Scale degrees a row is offset from the row below it.
+    pub row_interval_degrees: u8,
+}
+
+impl Default for GridConfig {
+    fn default() -> Self {
+        Self {
+            rows: 8,
+            cols: 8,
+            row_interval_degrees: 3,
+        }
+    }
+}
+
 /// How note-on velocity is chosen.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum VelocitySource {
@@ -65,37 +92,37 @@ impl Default for VelocitySource {
     }
 }
 
-/// How horizontal pen movement behaves *after* a note is struck.
+/// What sliding the pen onto a *different pad* does while a note is held.
 ///
-/// Pen-down always strikes the in-scale note under the pen. What dragging the
-/// pen sideways does next is the difference between an instrument that sustains
-/// one note and one that fires a stream of notes:
+/// Pen-down always strikes the pad under the pen, and the note sustains for as
+/// long as the pen stays pressed. These modes only differ once the pen slides
+/// out of the struck pad:
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum NoteMode {
-    /// **Sustain (default).** The struck pitch is latched for as long as the pen
-    /// is down; moving sideways does *not* change the note. Only Y (timbre) and
-    /// pressure (aftertouch) shape the held sound — "press a note and play it."
-    #[default]
+    /// **Latch.** The struck pad is held for as long as the pen is down;
+    /// sliding onto other pads does *not* change the note. Only expression
+    /// (bend within the pad, slide, pressure, tilt) shapes the held sound.
     Hold,
-    /// **Glide.** One note is struck, then its pitch slides continuously toward
-    /// the pointed pitch via MPE pitch-bend (theremin-like). The note only
-    /// retriggers if the required bend exceeds the configured bend range.
+    /// **Glide.** One note is struck, then its pitch bends continuously toward
+    /// the pad under the pen (theremin-like). The note only retriggers if the
+    /// required bend exceeds the configured bend range.
     Glide,
-    /// **Keyboard.** Every in-scale note the pen crosses retriggers a new note
-    /// (NoteOff the old, NoteOn the new). Good for fast runs, not for sustain.
+    /// **Pads (default).** Each pad is a key: sliding onto a new pad retriggers
+    /// (NoteOff the old, NoteOn the new pad's note) — Push-like.
+    #[default]
     Discrete,
 }
 
 impl NoteMode {
     /// All variants in display order, for UI pickers.
-    pub const ALL: [NoteMode; 3] = [NoteMode::Hold, NoteMode::Glide, NoteMode::Discrete];
+    pub const ALL: [NoteMode; 3] = [NoteMode::Discrete, NoteMode::Hold, NoteMode::Glide];
 
     /// Short human-readable label.
     pub fn label(self) -> &'static str {
         match self {
-            NoteMode::Hold => "Hold (sustain one note)",
-            NoteMode::Glide => "Glide (bend between notes)",
-            NoteMode::Discrete => "Keyboard (retrigger per note)",
+            NoteMode::Hold => "Latch (keep the struck pad)",
+            NoteMode::Glide => "Glide (bend between pads)",
+            NoteMode::Discrete => "Pads (retrigger per pad)",
         }
     }
 }
@@ -128,27 +155,37 @@ pub struct MidiMapping {
     pub scale: ScaleKind,
     /// Root pitch class, 0 = C .. 11 = B.
     pub key: u8,
-    /// MIDI note at the left edge of the surface (`x = 0`).
+    /// MIDI note of the bottom-left pad.
     pub low_note: u8,
-    /// Number of semitones spanned across the surface (`x = 0 → 1`).
-    pub span_notes: u8,
-    /// What dragging the pen sideways does after a note is struck (sustain /
-    /// glide / retrigger). Defaults to [`NoteMode::Hold`].
+    /// Pad-grid layout (rows, columns, per-row interval).
+    #[serde(default)]
+    pub grid: GridConfig,
+    /// Semitones of pitch bend for a full half-pad of horizontal movement away
+    /// from where the pen landed in the pad (vibrato / micro-bend). 0 disables.
+    #[serde(default = "default_pad_bend_semitones")]
+    pub pad_bend_semitones: f64,
+    /// What sliding onto a different pad does while a note is held (retrigger /
+    /// latch / glide). Defaults to [`NoteMode::Discrete`].
     #[serde(default)]
     pub mode: NoteMode,
     /// MPE channel layout + pitch-bend range.
     pub mpe: MpeConfig,
     /// Note-on velocity source.
     pub velocity: VelocitySource,
-    /// Map vertical position to CC74 (timbre).
+    /// Map the vertical position *within the pressed pad* to CC74 (timbre /
+    /// MPE "slide").
     pub y_to_cc74: bool,
-    /// Invert Y so the top of the surface is the high CC value (screen Y grows
+    /// Invert Y so the top of the pad is the high CC value (screen Y grows
     /// downward, so this is on by default for an intuitive "up = brighter").
     pub y_invert: bool,
     /// Map pen pressure to channel pressure (per-note aftertouch).
     pub pressure_to_channel_pressure: bool,
     /// Optional extra CC driven by pen tilt.
     pub tilt_cc: Option<TiltCc>,
+}
+
+fn default_pad_bend_semitones() -> f64 {
+    1.0
 }
 
 impl Default for MidiMapping {
@@ -158,14 +195,20 @@ impl Default for MidiMapping {
             scale: ScaleKind::MajorPentatonic,
             key: 0,
             low_note: 48, // C3
-            span_notes: 24, // two octaves
-            mode: NoteMode::Hold,
+            grid: GridConfig::default(),
+            pad_bend_semitones: default_pad_bend_semitones(),
+            mode: NoteMode::Discrete,
             mpe: MpeConfig::default(),
             velocity: VelocitySource::default(),
             y_to_cc74: true,
             y_invert: true,
             pressure_to_channel_pressure: true,
-            tilt_cc: None,
+            // Tilt modulates out of the box: pen tilt X → mod wheel.
+            tilt_cc: Some(TiltCc {
+                controller: 1,
+                axis: TiltAxis::X,
+                range_deg: 60.0,
+            }),
         }
     }
 }
@@ -248,18 +291,33 @@ impl MidiMapping {
                 reason: format!("key (pitch class) must be 0..=11, got {}", self.key),
             });
         }
-        if self.span_notes == 0 {
+        if self.grid.rows == 0 || self.grid.cols == 0 {
             return Err(MappingError::Validation {
-                field: "span_notes",
-                reason: "span_notes must be >= 1".to_owned(),
+                field: "grid.rows / grid.cols",
+                reason: format!(
+                    "grid must have at least one row and column, got {}x{}",
+                    self.grid.rows, self.grid.cols
+                ),
             });
         }
-        if i32::from(self.low_note) + i32::from(self.span_notes) > 127 {
+        if self.grid.row_interval_degrees == 0 {
             return Err(MappingError::Validation {
-                field: "low_note / span_notes",
+                field: "grid.row_interval_degrees",
+                reason: "row interval must be >= 1 scale degree".to_owned(),
+            });
+        }
+        if self.low_note > 127 {
+            return Err(MappingError::Validation {
+                field: "low_note",
+                reason: format!("low_note must be <= 127, got {}", self.low_note),
+            });
+        }
+        if self.pad_bend_semitones.is_nan() || self.pad_bend_semitones < 0.0 {
+            return Err(MappingError::Validation {
+                field: "pad_bend_semitones",
                 reason: format!(
-                    "low_note ({}) + span_notes ({}) must be <= 127",
-                    self.low_note, self.span_notes
+                    "pad bend must be >= 0 semitones, got {}",
+                    self.pad_bend_semitones
                 ),
             });
         }
@@ -318,11 +376,60 @@ mod tests {
     }
 
     #[test]
-    fn rejects_note_range_overflow() {
+    fn rejects_empty_grid() {
         let mut m = MidiMapping::default();
-        m.low_note = 120;
-        m.span_notes = 24;
+        m.grid.rows = 0;
         assert!(m.validate().is_err());
+        m.grid.rows = 8;
+        m.grid.cols = 0;
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_negative_pad_bend() {
+        let mut m = MidiMapping::default();
+        m.pad_bend_semitones = -1.0;
+        assert!(m.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_mapping_without_grid_fields_loads_with_defaults() {
+        // A pre-grid mapping file: no [grid] table, no pad_bend_semitones, and
+        // a now-removed span_notes key that must be ignored.
+        let dir = std::env::temp_dir().join(format!("tablet-midi-map-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.midimap.toml");
+        std::fs::write(
+            &path,
+            r#"
+name = "legacy"
+scale = "MajorPentatonic"
+key = 0
+low_note = 48
+span_notes = 24
+y_to_cc74 = true
+y_invert = true
+pressure_to_channel_pressure = true
+
+[mpe]
+master_channel = 0
+member_low = 1
+member_high = 15
+pitch_bend_range_semitones = 48.0
+
+[velocity.Pressure]
+min = 40
+max = 127
+"#,
+        )
+        .unwrap();
+
+        let loaded = MidiMapping::load(&path).unwrap();
+        assert_eq!(loaded.grid, GridConfig::default());
+        assert_eq!(loaded.pad_bend_semitones, default_pad_bend_semitones());
+        assert_eq!(loaded.mode, NoteMode::Discrete);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
