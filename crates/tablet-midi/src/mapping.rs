@@ -99,28 +99,29 @@ impl Default for VelocitySource {
 /// out of the struck pad:
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum NoteMode {
-    /// **Latch.** The struck pad is held for as long as the pen is down;
-    /// sliding onto other pads does *not* change the note. Only expression
-    /// (bend within the pad, slide, pressure, tilt) shapes the held sound.
+    /// **Latch (default).** The struck pad is held for as long as the pen is
+    /// down; sliding onto other pads does *not* change the note. Dragging only
+    /// modulates the held sound: up/down → pitch bend, left/right → CC74,
+    /// pressure → channel pressure, tilt → CC.
+    #[default]
     Hold,
     /// **Glide.** One note is struck, then its pitch bends continuously toward
     /// the pad under the pen (theremin-like). The note only retriggers if the
     /// required bend exceeds the configured bend range.
     Glide,
-    /// **Pads (default).** Each pad is a key: sliding onto a new pad retriggers
-    /// (NoteOff the old, NoteOn the new pad's note) — Push-like.
-    #[default]
+    /// **Pads.** Each pad is a key: sliding onto a new pad retriggers
+    /// (NoteOff the old, NoteOn the new pad's note) — Push-like drum pads.
     Discrete,
 }
 
 impl NoteMode {
     /// All variants in display order, for UI pickers.
-    pub const ALL: [NoteMode; 3] = [NoteMode::Discrete, NoteMode::Hold, NoteMode::Glide];
+    pub const ALL: [NoteMode; 3] = [NoteMode::Hold, NoteMode::Glide, NoteMode::Discrete];
 
     /// Short human-readable label.
     pub fn label(self) -> &'static str {
         match self {
-            NoteMode::Hold => "Latch (keep the struck pad)",
+            NoteMode::Hold => "Latch (drag modulates, note stays)",
             NoteMode::Glide => "Glide (bend between pads)",
             NoteMode::Discrete => "Pads (retrigger per pad)",
         }
@@ -160,32 +161,37 @@ pub struct MidiMapping {
     /// Pad-grid layout (rows, columns, per-row interval).
     #[serde(default)]
     pub grid: GridConfig,
-    /// Semitones of pitch bend for a full half-pad of horizontal movement away
-    /// from where the pen landed in the pad (vibrato / micro-bend). 0 disables.
-    #[serde(default = "default_pad_bend_semitones")]
-    pub pad_bend_semitones: f64,
-    /// What sliding onto a different pad does while a note is held (retrigger /
-    /// latch / glide). Defaults to [`NoteMode::Discrete`].
+    /// Semitones of pitch bend for dragging the pen vertically across the full
+    /// surface height, measured from where the note was struck (up = higher).
+    /// 0 disables. Applies in Latch/Pads modes; Glide bends toward the pointed
+    /// pad instead.
+    #[serde(default = "default_y_bend_semitones")]
+    pub y_bend_semitones: f64,
+    /// What sliding onto a different pad does while a note is held (latch /
+    /// glide / retrigger). Defaults to [`NoteMode::Hold`].
     #[serde(default)]
     pub mode: NoteMode,
     /// MPE channel layout + pitch-bend range.
     pub mpe: MpeConfig,
     /// Note-on velocity source.
     pub velocity: VelocitySource,
-    /// Map the vertical position *within the pressed pad* to CC74 (timbre /
-    /// MPE "slide").
-    pub y_to_cc74: bool,
-    /// Invert Y so the top of the pad is the high CC value (screen Y grows
-    /// downward, so this is on by default for an intuitive "up = brighter").
-    pub y_invert: bool,
+    /// Drive CC74 (timbre / "frequency" / brightness) from horizontal pen
+    /// movement, measured from where the note was struck: the strike is the
+    /// neutral center (64), dragging right brightens, left darkens.
+    #[serde(default = "default_true", alias = "y_to_cc74")]
+    pub x_to_cc74: bool,
     /// Map pen pressure to channel pressure (per-note aftertouch).
     pub pressure_to_channel_pressure: bool,
     /// Optional extra CC driven by pen tilt.
     pub tilt_cc: Option<TiltCc>,
 }
 
-fn default_pad_bend_semitones() -> f64 {
-    1.0
+fn default_y_bend_semitones() -> f64 {
+    12.0
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for MidiMapping {
@@ -196,12 +202,11 @@ impl Default for MidiMapping {
             key: 0,
             low_note: 48, // C3
             grid: GridConfig::default(),
-            pad_bend_semitones: default_pad_bend_semitones(),
-            mode: NoteMode::Discrete,
+            y_bend_semitones: default_y_bend_semitones(),
+            mode: NoteMode::Hold,
             mpe: MpeConfig::default(),
             velocity: VelocitySource::default(),
-            y_to_cc74: true,
-            y_invert: true,
+            x_to_cc74: true,
             pressure_to_channel_pressure: true,
             // Tilt modulates out of the box: pen tilt X → mod wheel.
             tilt_cc: Some(TiltCc {
@@ -312,12 +317,12 @@ impl MidiMapping {
                 reason: format!("low_note must be <= 127, got {}", self.low_note),
             });
         }
-        if self.pad_bend_semitones.is_nan() || self.pad_bend_semitones < 0.0 {
+        if self.y_bend_semitones.is_nan() || self.y_bend_semitones < 0.0 {
             return Err(MappingError::Validation {
-                field: "pad_bend_semitones",
+                field: "y_bend_semitones",
                 reason: format!(
-                    "pad bend must be >= 0 semitones, got {}",
-                    self.pad_bend_semitones
+                    "drag bend must be >= 0 semitones, got {}",
+                    self.y_bend_semitones
                 ),
             });
         }
@@ -386,16 +391,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_negative_pad_bend() {
+    fn rejects_negative_drag_bend() {
         let mut m = MidiMapping::default();
-        m.pad_bend_semitones = -1.0;
+        m.y_bend_semitones = -1.0;
         assert!(m.validate().is_err());
     }
 
     #[test]
     fn legacy_mapping_without_grid_fields_loads_with_defaults() {
-        // A pre-grid mapping file: no [grid] table, no pad_bend_semitones, and
-        // a now-removed span_notes key that must be ignored.
+        // A pre-grid mapping file: no [grid] table, no y_bend_semitones, and
+        // now-removed span_notes / y_invert keys that must be ignored. The old
+        // y_to_cc74 key aliases onto x_to_cc74.
         let dir = std::env::temp_dir().join(format!("tablet-midi-map-legacy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("legacy.midimap.toml");
@@ -426,8 +432,9 @@ max = 127
 
         let loaded = MidiMapping::load(&path).unwrap();
         assert_eq!(loaded.grid, GridConfig::default());
-        assert_eq!(loaded.pad_bend_semitones, default_pad_bend_semitones());
-        assert_eq!(loaded.mode, NoteMode::Discrete);
+        assert_eq!(loaded.y_bend_semitones, default_y_bend_semitones());
+        assert_eq!(loaded.mode, NoteMode::Hold);
+        assert!(loaded.x_to_cc74, "legacy y_to_cc74 key must alias");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

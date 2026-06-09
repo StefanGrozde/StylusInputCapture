@@ -105,7 +105,16 @@ impl HudApp {
                     None
                 }
             })
-            .unwrap_or_else(CalibrationProfile::identity);
+            .unwrap_or_else(|| {
+                // Contact must come from pressure, not proximity: Wacom pens
+                // report in_proximity while merely hovering, which would
+                // consume the note-on edge before the pad is ever touched.
+                let mut p = CalibrationProfile::identity();
+                p.activation.enabled = true;
+                p.activation.on_threshold = 0.04;
+                p.activation.off_threshold = 0.02;
+                p
+            });
 
         let (mapping, mapping_path, mapping_status) = match args.mapping {
             Some(path) => match MidiMapping::load(&path) {
@@ -406,13 +415,12 @@ impl HudApp {
         // ── Expression axes ──
         ui.label("Expression");
         ui.add(
-            egui::Slider::new(&mut self.mapping.pad_bend_semitones, 0.0..=12.0)
-                .text("pad X → bend (semitones/half-pad)"),
+            egui::Slider::new(&mut self.mapping.y_bend_semitones, 0.0..=48.0)
+                .text("drag up/down → bend (st per surface height)"),
         );
-        ui.checkbox(&mut self.mapping.y_to_cc74, "pad Y → CC74 (slide/timbre)");
-        ui.add_enabled(
-            self.mapping.y_to_cc74,
-            egui::Checkbox::new(&mut self.mapping.y_invert, "invert (pad top = brighter)"),
+        ui.checkbox(
+            &mut self.mapping.x_to_cc74,
+            "drag left/right → CC74 (timbre/frequency)",
         );
         ui.checkbox(
             &mut self.mapping.pressure_to_channel_pressure,

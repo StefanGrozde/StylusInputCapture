@@ -10,13 +10,16 @@
 //! ## Voice model (single pen, pad grid)
 //! The surface is a grid of pads ([`pads`]); pressing one starts its note and
 //! the note **sustains for as long as the pen stays pressed**. While held, the
-//! pen's continuous inputs modulate the voice's MPE expression: pressure →
-//! channel pressure, within-pad X → pitch bend (relative to where the pen
-//! landed, so the strike is always in tune), within-pad Y → CC74 ("slide"),
-//! tilt → an extra CC. One pen contacts one point, so at most one note sounds
-//! at a time — but each note is assigned its **own MPE member channel**
-//! (round-robin), so successive notes don't share controller state. True
-//! chords would require multitouch, a future extension.
+//! pen's continuous inputs modulate the voice's MPE expression — all measured
+//! relative to where the note was struck, so a fresh note always starts
+//! neutral: dragging **up/down** → pitch bend (up = higher), dragging
+//! **left/right** → CC74 (timbre / brightness, the synth's "frequency"),
+//! pressure → channel pressure, tilt → an extra CC. In the default Latch mode
+//! dragging across other pads never changes the note — it only modulates. One
+//! pen contacts one point, so at most one note sounds at a time — but each
+//! note is assigned its **own MPE member channel** (round-robin), so
+//! successive notes don't share controller state. True chords would require
+//! multitouch, a future extension.
 
 use tablet_process::ProcessedSample;
 
@@ -32,9 +35,11 @@ struct Voice {
     note: u8,
     /// The pad whose note is sounding (for HUD highlight + slide detection).
     pad: Pad,
-    /// Within-pad X at the strike — bend is measured from here so a note never
-    /// starts off-pitch just because the pen landed off-center.
-    fx_origin: f64,
+    /// Surface position at the strike — drag expression (Y → bend,
+    /// X → CC74) is measured from here, so a fresh note always starts at
+    /// neutral pitch and timbre no matter where it was struck.
+    x_origin: f64,
+    y_origin: f64,
 }
 
 /// Stateful MPE mapper. Construct once per session and thread it through every
@@ -116,12 +121,12 @@ impl MpeEngine {
             note,
             velocity,
         });
-        let (fx, _) = pads::pad_fraction(s.x, s.y, &m.grid);
         self.voice = Some(Voice {
             channel,
             note,
             pad,
-            fx_origin: fx,
+            x_origin: s.x,
+            y_origin: s.y,
         });
         self.reset_expression();
     }
@@ -187,12 +192,12 @@ impl MpeEngine {
             note,
             velocity,
         });
-        let (fx, _) = pads::pad_fraction(s.x, s.y, &m.grid);
         self.voice = Some(Voice {
             channel,
             note,
             pad,
-            fx_origin: fx,
+            x_origin: s.x,
+            y_origin: s.y,
         });
         self.reset_expression();
     }
@@ -204,22 +209,19 @@ impl MpeEngine {
             return;
         };
 
-        let pad = pads::pad_at(s.x, s.y, &m.grid);
-        let (fx, fy) = pads::pad_fraction(s.x, s.y, &m.grid);
-
-        // Pitch bend. In Hold/Discrete the within-pad horizontal offset from
-        // the strike point gives vibrato/micro-bend; in Glide the bend tracks
-        // the pad under the pen (plus the same within-pad offset) so the pitch
+        // Pitch bend. In Latch/Pads modes dragging vertically from the strike
+        // point bends the held note (up = higher; stream Y grows downward, so
+        // the sign flips); a full surface height of travel = `y_bend_semitones`.
+        // In Glide the bend tracks the pad under the pen instead, so the pitch
         // slides continuously across the surface.
         let bend_semitones = match m.mode {
             NoteMode::Hold | NoteMode::Discrete => {
-                // Full half-pad of travel = `pad_bend_semitones`.
-                (fx - voice.fx_origin) * 2.0 * m.pad_bend_semitones
+                (voice.y_origin - s.y) * m.y_bend_semitones
             }
             NoteMode::Glide => {
+                let pad = pads::pad_at(s.x, s.y, &m.grid);
                 let target = pads::pad_note(pad, m).unwrap_or(voice.note);
-                let toward = f64::from(target) - f64::from(voice.note);
-                toward + (fx - voice.fx_origin) * 2.0 * m.pad_bend_semitones
+                f64::from(target) - f64::from(voice.note)
             }
         };
         let bend = bend_value(bend_semitones, m.mpe.pitch_bend_range_semitones);
@@ -231,11 +233,11 @@ impl MpeEngine {
             self.last_bend = Some(bend);
         }
 
-        if m.y_to_cc74 {
-            // Within-pad vertical position — the MPE "slide" axis. `fy` grows
-            // upward, so `y_invert` (up = brighter) uses it directly.
-            let slide = if m.y_invert { fy } else { 1.0 - fy };
-            let cc = to_7bit(slide);
+        if m.x_to_cc74 {
+            // Horizontal drag from the strike point → CC74 (timbre /
+            // brightness). The strike is the neutral center (64); a half
+            // surface width of travel reaches the rails.
+            let cc = to_7bit(0.5 + (s.x - voice.x_origin));
             if self.last_cc74 != Some(cc) {
                 out.push(MidiEvent::ControlChange {
                     channel: voice.channel,
@@ -565,45 +567,58 @@ mod tests {
     }
 
     #[test]
-    fn bend_is_centered_at_strike_regardless_of_landing_position() {
+    fn dragging_up_bends_pitch_up_from_a_neutral_strike() {
         let mut e = MpeEngine::new();
-        let m = mapping(); // pad_bend_semitones = 1.0 by default
+        let mut m = mapping();
+        m.mode = NoteMode::Hold; // the default latch behaviour
         let mut out = Vec::new();
 
-        // Land off-center in the pad: the first bend must still be center.
-        let (x, y) = pad_center(0, 0);
-        let off_center = x + 0.3 / 8.0; // fx ≈ 0.8 within the pad
-        e.process(&sample(off_center, y, 0.8, true), &m, &mut out);
+        // Wherever the pen lands, the first bend must be center (in tune).
+        let (x, y) = pad_center(2, 3);
+        e.process(&sample(x, y, 0.8, true), &m, &mut out);
         let first_bend = out.iter().find_map(|ev| match ev {
             MidiEvent::PitchBend { value, .. } => Some(*value),
             _ => None,
         });
         assert_eq!(first_bend, Some(PITCH_BEND_CENTER));
+        let note = e.active_note().unwrap();
 
-        // Moving right within the pad bends up; back to the strike re-centers.
+        // Dragging up (smaller stream Y) bends the pitch up, note unchanged.
         out.clear();
-        e.process(&sample(off_center + 0.1 / 8.0, y, 0.8, true), &m, &mut out);
+        e.process(&sample(x, y - 0.25, 0.8, true), &m, &mut out);
         let bend_up = out
             .iter()
             .find_map(|ev| match ev {
                 MidiEvent::PitchBend { value, .. } => Some(*value),
                 _ => None,
             })
-            .expect("bend after moving");
-        assert!(bend_up > PITCH_BEND_CENTER);
+            .expect("bend after dragging up");
+        assert!(bend_up > PITCH_BEND_CENTER, "up must bend up, got {bend_up}");
+        assert_eq!(e.active_note(), Some(note));
+
+        // Dragging below the strike bends down.
+        out.clear();
+        e.process(&sample(x, y + 0.2, 0.8, true), &m, &mut out);
+        let bend_down = out
+            .iter()
+            .find_map(|ev| match ev {
+                MidiEvent::PitchBend { value, .. } => Some(*value),
+                _ => None,
+            })
+            .expect("bend after dragging down");
+        assert!(bend_down < PITCH_BEND_CENTER);
     }
 
     #[test]
-    fn within_pad_y_drives_cc74_and_pressure_drives_channel_pressure_on_change_only() {
+    fn dragging_right_drives_cc74_and_pressure_drives_channel_pressure_on_change_only() {
         let mut e = MpeEngine::new();
-        let m = mapping();
+        let mut m = mapping();
+        m.mode = NoteMode::Hold;
 
-        // Press at the very top edge of pad (0,0): fy ≈ 1, inverted default →
-        // CC74 near max. Pressure 0.5 → 64.
-        let x = 0.5 / 8.0;
-        let y_top = 1.0 - 0.999 / 8.0;
+        // Strike: CC74 starts at the neutral center 64. Pressure 0.5 → 64.
+        let (x, y) = pad_center(0, 2);
         let mut out = Vec::new();
-        e.process(&sample(x, y_top, 0.5, true), &m, &mut out);
+        e.process(&sample(x, y, 0.5, true), &m, &mut out);
         let cc74 = out
             .iter()
             .find_map(|ev| match ev {
@@ -615,7 +630,7 @@ mod tests {
                 _ => None,
             })
             .expect("CC74 on press");
-        assert!(cc74 > 120, "top of pad must be bright, got {cc74}");
+        assert_eq!(cc74, 64, "strike must be the neutral timbre center");
         assert!(out.iter().any(|e| matches!(
             e,
             MidiEvent::ChannelPressure { value: 64, .. }
@@ -623,7 +638,7 @@ mod tests {
 
         // Same position and pressure again → no new CC74/pressure events.
         out.clear();
-        e.process(&sample(x, y_top, 0.5, true), &m, &mut out);
+        e.process(&sample(x, y, 0.5, true), &m, &mut out);
         assert!(!out
             .iter()
             .any(|e| matches!(e, MidiEvent::ControlChange { controller: 74, .. })));
@@ -631,11 +646,10 @@ mod tests {
             .iter()
             .any(|e| matches!(e, MidiEvent::ChannelPressure { .. })));
 
-        // Sliding toward the pad's bottom darkens CC74.
+        // Dragging right brightens, dragging left of the strike darkens.
         out.clear();
-        let y_low = 1.0 - 0.2 / 8.0;
-        e.process(&sample(x, y_low, 0.5, true), &m, &mut out);
-        let cc74_low = out
+        e.process(&sample(x + 0.3, y, 0.5, true), &m, &mut out);
+        let cc74_right = out
             .iter()
             .find_map(|ev| match ev {
                 MidiEvent::ControlChange {
@@ -645,8 +659,23 @@ mod tests {
                 } => Some(*value),
                 _ => None,
             })
-            .expect("CC74 after slide");
-        assert!(cc74_low < cc74);
+            .expect("CC74 after dragging right");
+        assert!(cc74_right > 64, "right must brighten, got {cc74_right}");
+
+        out.clear();
+        e.process(&sample(x - 0.3, y, 0.5, true), &m, &mut out);
+        let cc74_left = out
+            .iter()
+            .find_map(|ev| match ev {
+                MidiEvent::ControlChange {
+                    controller: CC_TIMBRE,
+                    value,
+                    ..
+                } => Some(*value),
+                _ => None,
+            })
+            .expect("CC74 after dragging left");
+        assert!(cc74_left < 64, "left must darken, got {cc74_left}");
     }
 
     #[test]
