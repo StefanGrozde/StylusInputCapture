@@ -61,6 +61,41 @@ impl Default for VelocitySource {
     }
 }
 
+/// How horizontal pen movement behaves *after* a note is struck.
+///
+/// Pen-down always strikes the in-scale note under the pen. What dragging the
+/// pen sideways does next is the difference between an instrument that sustains
+/// one note and one that fires a stream of notes:
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum NoteMode {
+    /// **Sustain (default).** The struck pitch is latched for as long as the pen
+    /// is down; moving sideways does *not* change the note. Only Y (timbre) and
+    /// pressure (aftertouch) shape the held sound — "press a note and play it."
+    #[default]
+    Hold,
+    /// **Glide.** One note is struck, then its pitch slides continuously toward
+    /// the pointed pitch via MPE pitch-bend (theremin-like). The note only
+    /// retriggers if the required bend exceeds the configured bend range.
+    Glide,
+    /// **Keyboard.** Every in-scale note the pen crosses retriggers a new note
+    /// (NoteOff the old, NoteOn the new). Good for fast runs, not for sustain.
+    Discrete,
+}
+
+impl NoteMode {
+    /// All variants in display order, for UI pickers.
+    pub const ALL: [NoteMode; 3] = [NoteMode::Hold, NoteMode::Glide, NoteMode::Discrete];
+
+    /// Short human-readable label.
+    pub fn label(self) -> &'static str {
+        match self {
+            NoteMode::Hold => "Hold (sustain one note)",
+            NoteMode::Glide => "Glide (bend between notes)",
+            NoteMode::Discrete => "Keyboard (retrigger per note)",
+        }
+    }
+}
+
 /// Which tilt component feeds the optional extra CC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TiltAxis {
@@ -93,9 +128,10 @@ pub struct MidiMapping {
     pub low_note: u8,
     /// Number of semitones spanned across the surface (`x = 0 → 1`).
     pub span_notes: u8,
-    /// When true, moving across pitch glides via pitch-bend (re-centering when
-    /// the bend range is exceeded); when false, each scale note retriggers.
-    pub glide: bool,
+    /// What dragging the pen sideways does after a note is struck (sustain /
+    /// glide / retrigger). Defaults to [`NoteMode::Hold`].
+    #[serde(default)]
+    pub mode: NoteMode,
     /// MPE channel layout + pitch-bend range.
     pub mpe: MpeConfig,
     /// Note-on velocity source.
@@ -119,7 +155,7 @@ impl Default for MidiMapping {
             key: 0,
             low_note: 48, // C3
             span_notes: 24, // two octaves
-            glide: false,
+            mode: NoteMode::Hold,
             mpe: MpeConfig::default(),
             velocity: VelocitySource::default(),
             y_to_cc74: true,
@@ -300,7 +336,7 @@ mod tests {
         let mut m = MidiMapping::default();
         m.name = "round-trip".to_owned();
         m.scale = ScaleKind::Dorian;
-        m.glide = true;
+        m.mode = NoteMode::Glide;
         m.tilt_cc = Some(TiltCc {
             controller: 1,
             axis: TiltAxis::X,

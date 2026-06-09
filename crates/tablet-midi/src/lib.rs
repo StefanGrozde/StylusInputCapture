@@ -18,5 +18,7 @@ pub mod scale;
 
 pub use engine::MpeEngine;
 pub use event::{MidiBytes, MidiEvent, CC_ALL_NOTES_OFF, CC_TIMBRE, PITCH_BEND_CENTER};
-pub use mapping::{MappingError, MidiMapping, MpeConfig, TiltAxis, TiltCc, VelocitySource};
+pub use mapping::{
+    MappingError, MidiMapping, MpeConfig, NoteMode, TiltAxis, TiltCc, VelocitySource,
+};
 pub use scale::{quantize, QuantizedPitch, ScaleKind, PITCH_CLASS_NAMES};

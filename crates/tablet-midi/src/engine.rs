@@ -17,7 +17,7 @@
 use tablet_process::ProcessedSample;
 
 use crate::event::{MidiEvent, CC_ALL_NOTES_OFF, CC_TIMBRE, PITCH_BEND_CENTER};
-use crate::mapping::{MidiMapping, TiltAxis, VelocitySource};
+use crate::mapping::{MidiMapping, NoteMode, TiltAxis, VelocitySource};
 use crate::scale::{self, QuantizedPitch};
 
 /// The note currently sounding and the member channel carrying it.
@@ -105,7 +105,8 @@ impl MpeEngine {
         self.reset_expression();
     }
 
-    /// Held note: either glide via pitch-bend or retrigger on a new scale note.
+    /// Held note: behaviour depends on [`NoteMode`] — sustain the struck pitch,
+    /// glide via pitch-bend, or retrigger on each new scale note.
     fn continue_note(
         &mut self,
         s: &ProcessedSample,
@@ -114,17 +115,25 @@ impl MpeEngine {
         voice: Voice,
         out: &mut Vec<MidiEvent>,
     ) {
-        if m.glide {
-            // Keep one note and bend toward the exact pointed pitch. If the
-            // required bend exceeds the configured range, retrigger on the
-            // snapped note to re-center.
-            let bend = q.continuous - f64::from(voice.note);
-            if bend.abs() > m.mpe.pitch_bend_range_semitones {
-                self.retrigger(s, m, q.note, out);
+        match m.mode {
+            // Sustain: the struck pitch is latched; sideways movement never
+            // changes the note (only expression, in `emit_expression`).
+            NoteMode::Hold => {}
+            NoteMode::Glide => {
+                // Keep one note and bend toward the exact pointed pitch. If the
+                // required bend exceeds the configured range, retrigger on the
+                // snapped note to re-center.
+                let bend = q.continuous - f64::from(voice.note);
+                if bend.abs() > m.mpe.pitch_bend_range_semitones {
+                    self.retrigger(s, m, q.note, out);
+                }
             }
-        } else if q.note != voice.note {
-            // Discrete keyboard: each new scale note retriggers.
-            self.retrigger(s, m, q.note, out);
+            NoteMode::Discrete => {
+                if q.note != voice.note {
+                    // Discrete keyboard: each new scale note retriggers.
+                    self.retrigger(s, m, q.note, out);
+                }
+            }
         }
     }
 
@@ -164,11 +173,11 @@ impl MpeEngine {
         // Pitch bend: residual to the exact pointed pitch (relative to the
         // held note), clamped to the configured range.
         let q = scale::quantize(s.x, m.low_note, m.span_notes, m.scale, m.key);
-        let bend_semitones = if m.glide {
-            q.continuous - f64::from(voice.note)
-        } else {
-            // Discrete mode: snap exactly to the note (no expressive bend).
-            0.0
+        let bend_semitones = match m.mode {
+            // Glide bends toward the exact pointed pitch.
+            NoteMode::Glide => q.continuous - f64::from(voice.note),
+            // Hold and Discrete keep the struck pitch (no expressive bend).
+            NoteMode::Hold | NoteMode::Discrete => 0.0,
         };
         let bend = bend_value(bend_semitones, m.mpe.pitch_bend_range_semitones);
         if self.last_bend != Some(bend) {
@@ -338,12 +347,13 @@ mod tests {
     }
 
     fn mapping() -> MidiMapping {
-        // Chromatic, key C, 48..72, discrete (no glide) for predictable notes.
+        // Chromatic, key C, 48..72, keyboard mode for predictable per-note
+        // retrigger behaviour in the tests.
         let mut m = MidiMapping::default();
         m.scale = ScaleKind::Chromatic;
         m.span_notes = 24;
         m.low_note = 48;
-        m.glide = false;
+        m.mode = NoteMode::Discrete;
         m
     }
 
@@ -420,6 +430,44 @@ mod tests {
             .any(|e| matches!(e, MidiEvent::NoteOn { note: 60, .. }));
         assert!(has_off_48 && has_on_60, "expected retrigger, got {out:?}");
         assert_eq!(e.active_note(), Some(60));
+    }
+
+    #[test]
+    fn hold_mode_sustains_one_note_while_moving() {
+        let mut e = MpeEngine::new();
+        let mut m = mapping();
+        m.mode = NoteMode::Hold;
+        let mut out = Vec::new();
+
+        e.process(&sample(0.0, 0.5, 0.8, true), &m, &mut out); // strike note 48
+        let on_channel = e.voice.unwrap().channel;
+        out.clear();
+
+        // Sweep all the way across the surface: the note must not change and no
+        // NoteOff/NoteOn may fire — only expression (CC74) tracks the movement.
+        for x in [0.25, 0.5, 0.75, 1.0] {
+            e.process(&sample(x, 0.5, 0.8, true), &m, &mut out);
+        }
+        assert_eq!(e.active_note(), Some(48), "pitch must stay latched");
+        assert!(
+            !out.iter().any(|ev| matches!(
+                ev,
+                MidiEvent::NoteOn { .. } | MidiEvent::NoteOff { .. }
+            )),
+            "hold mode must not retrigger while moving, got {out:?}"
+        );
+
+        // Pen up releases the single sustained note.
+        out.clear();
+        e.process(&sample(1.0, 0.5, 0.0, false), &m, &mut out);
+        assert_eq!(
+            out,
+            vec![MidiEvent::NoteOff {
+                channel: on_channel,
+                note: 48,
+                velocity: 0
+            }]
+        );
     }
 
     #[test]

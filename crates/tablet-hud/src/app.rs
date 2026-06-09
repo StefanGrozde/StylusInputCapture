@@ -19,7 +19,7 @@ use tablet_consumer::{
 };
 use tablet_core::{DeviceCapabilities, PenSample};
 use tablet_midi::{
-    MidiEvent, MidiMapping, MpeEngine, ScaleKind, VelocitySource, PITCH_CLASS_NAMES,
+    MidiEvent, MidiMapping, MpeEngine, NoteMode, ScaleKind, VelocitySource, PITCH_CLASS_NAMES,
 };
 use tablet_process::{CalibrationProfile, ProcessedSample, ProcessorState};
 use tablet_stream::{Format, StreamMessage};
@@ -302,7 +302,14 @@ impl HudApp {
             });
         ui.add(egui::Slider::new(&mut self.mapping.low_note, 0..=96).text("low note"));
         ui.add(egui::Slider::new(&mut self.mapping.span_notes, 1..=48).text("span (semitones)"));
-        ui.checkbox(&mut self.mapping.glide, "glide (pitch-bend between notes)");
+        ui.label("Note motion (what dragging sideways does)");
+        egui::ComboBox::from_id_salt("note_mode")
+            .selected_text(self.mapping.mode.label())
+            .show_ui(ui, |ui| {
+                for mode in NoteMode::ALL {
+                    ui.selectable_value(&mut self.mapping.mode, mode, mode.label());
+                }
+            });
         ui.separator();
 
         // ── MPE ──
