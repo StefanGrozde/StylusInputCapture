@@ -100,41 +100,6 @@ impl NoteMode {
     }
 }
 
-/// How horizontal pen movement behaves *after* a note is struck.
-///
-/// Pen-down always strikes the in-scale note under the pen. What dragging the
-/// pen sideways does next is the difference between an instrument that sustains
-/// one note and one that fires a stream of notes:
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum NoteMode {
-    /// **Sustain (default).** The struck pitch is latched for as long as the pen
-    /// is down; moving sideways does *not* change the note. Only Y (timbre) and
-    /// pressure (aftertouch) shape the held sound — "press a note and play it."
-    #[default]
-    Hold,
-    /// **Glide.** One note is struck, then its pitch slides continuously toward
-    /// the pointed pitch via MPE pitch-bend (theremin-like). The note only
-    /// retriggers if the required bend exceeds the configured bend range.
-    Glide,
-    /// **Keyboard.** Every in-scale note the pen crosses retriggers a new note
-    /// (NoteOff the old, NoteOn the new). Good for fast runs, not for sustain.
-    Discrete,
-}
-
-impl NoteMode {
-    /// All variants in display order, for UI pickers.
-    pub const ALL: [NoteMode; 3] = [NoteMode::Hold, NoteMode::Glide, NoteMode::Discrete];
-
-    /// Short human-readable label.
-    pub fn label(self) -> &'static str {
-        match self {
-            NoteMode::Hold => "Hold (sustain one note)",
-            NoteMode::Glide => "Glide (bend between notes)",
-            NoteMode::Discrete => "Keyboard (retrigger per note)",
-        }
-    }
-}
-
 /// Which tilt component feeds the optional extra CC.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TiltAxis {
