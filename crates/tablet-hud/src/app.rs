@@ -11,7 +11,11 @@
 //! revision can move emission onto a dedicated thread fed by the ring for
 //! lower jitter without touching the mapping logic.
 
-use std::{collections::VecDeque, path::PathBuf};
+use std::{
+    collections::VecDeque,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
 use tablet_consumer::{
@@ -63,6 +67,13 @@ pub struct HudApp {
     midi_ports: Vec<String>,
     selected_port: usize,
     midi_status: Option<String>,
+    /// Running count of MIDI events actually sent to a connected port — a live
+    /// "is anything leaving the app?" indicator in the top bar.
+    events_sent: u64,
+    /// A manually-triggered diagnostic note awaiting its NoteOff: (channel,
+    /// note, deadline). Sent on the master channel at a loud fixed velocity so
+    /// it's audible on any synth regardless of the pen / velocity mapping.
+    test_note: Option<(u8, u8, Instant)>,
 
     history: VecDeque<HudPoint>,
 }
@@ -132,6 +143,8 @@ impl HudApp {
             midi_ports: MidiOut::list_ports(),
             selected_port: 0,
             midi_status: None,
+            events_sent: 0,
+            test_note: None,
             history: VecDeque::with_capacity(HISTORY_CAPACITY),
         }
     }
@@ -172,6 +185,9 @@ impl HudApp {
         for event in &self.events_scratch {
             self.midi.send(event);
         }
+        if self.midi.is_connected() {
+            self.events_sent += self.events_scratch.len() as u64;
+        }
 
         if self.history.len() == HISTORY_CAPACITY {
             self.history.pop_front();
@@ -207,11 +223,54 @@ impl HudApp {
     }
 
     fn panic_all_notes_off(&mut self) {
+        self.end_test_note();
         self.events_scratch.clear();
         self.engine
             .all_notes_off(&self.mapping, &mut self.events_scratch);
         for event in &self.events_scratch {
             self.midi.send(event);
+        }
+    }
+
+    /// Fire a fixed, loud middle-C on the master channel to prove the MIDI path
+    /// end to end, independent of the pen and the velocity mapping. Its NoteOff
+    /// is sent shortly after by [`service_test_note`].
+    fn send_test_note(&mut self) {
+        // Release any previous, still-pending test note first.
+        self.end_test_note();
+        let channel = self.mapping.mpe.master_channel;
+        let note = 60; // middle C
+        self.midi.send(&MidiEvent::NoteOn {
+            channel,
+            note,
+            velocity: 100,
+        });
+        self.events_sent += 1;
+        self.test_note = Some((channel, note, Instant::now() + Duration::from_millis(500)));
+    }
+
+    /// Send the pending test note's NoteOff once its deadline passes.
+    fn service_test_note(&mut self) {
+        if let Some((channel, note, deadline)) = self.test_note {
+            if Instant::now() >= deadline {
+                self.midi.send(&MidiEvent::NoteOff {
+                    channel,
+                    note,
+                    velocity: 0,
+                });
+                self.events_sent += 1;
+                self.test_note = None;
+            }
+        }
+    }
+
+    fn end_test_note(&mut self) {
+        if let Some((channel, note, _)) = self.test_note.take() {
+            self.midi.send(&MidiEvent::NoteOff {
+                channel,
+                note,
+                velocity: 0,
+            });
         }
     }
 
@@ -271,6 +330,15 @@ impl HudApp {
             if ui.button("Panic").clicked() {
                 self.panic_all_notes_off();
             }
+            if ui
+                .add_enabled(self.midi.is_connected(), egui::Button::new("Test note"))
+                .on_hover_text("Send a loud middle-C on the master channel to verify audio output")
+                .clicked()
+            {
+                self.send_test_note();
+            }
+            ui.separator();
+            ui.label(format!("tx: {}", self.events_sent));
         });
 
         if let Some(status) = &self.midi_status {
@@ -581,6 +649,7 @@ impl eframe::App for HudApp {
         // Live stream: repaint every frame so we keep draining and animating.
         ui.ctx().request_repaint();
         self.drain_source();
+        self.service_test_note();
 
         egui::Panel::top("hud_top").show_inside(ui, |ui| self.draw_top_bar(ui));
 
