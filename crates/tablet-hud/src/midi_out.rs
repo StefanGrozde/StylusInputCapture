@@ -82,6 +82,13 @@ mod backend {
             }
         }
 
+        /// Index of the first output port whose name contains `substring`.
+        pub fn find_port_index_by_name(substring: &str) -> Option<usize> {
+            Self::list_ports()
+                .iter()
+                .position(|name| name.contains(substring))
+        }
+
         /// Can this platform create virtual ports? (unix: yes; Windows: no.)
         pub fn virtual_supported() -> bool {
             cfg!(unix)
@@ -161,6 +168,9 @@ mod backend {
         }
         pub fn list_ports() -> Vec<String> {
             Vec::new()
+        }
+        pub fn find_port_index_by_name(_substring: &str) -> Option<usize> {
+            None
         }
         pub fn virtual_supported() -> bool {
             false

@@ -34,6 +34,9 @@ use crate::midi_out::{mpe_init_events, MidiOut};
 use crate::prefs::HudPrefs;
 use crate::theme;
 
+/// Windows default MIDI synth — present on most systems but ignores MPE.
+const GS_WAVETABLE_SUBSTR: &str = "Microsoft GS Wavetable Synth";
+
 /// Bounded ring of recent points drawn as the fading trail on the surface.
 const HISTORY_CAPACITY: usize = 512;
 
@@ -160,14 +163,14 @@ impl HudApp {
 
         let midi_ports = MidiOut::list_ports();
         // Preselect the remembered port if it still exists (never auto-connect
-        // — pushing MPE init messages to a port unprompted would be surprising).
+        // unless `--midi-port` was given — pushing MPE init unprompted is surprising).
         let selected_port = prefs
             .last_midi_port
             .as_ref()
             .and_then(|last| midi_ports.iter().position(|name| name == last))
             .unwrap_or(0);
 
-        Self {
+        let mut app = Self {
             source_state: source_handle.state(),
             source: args.source,
             format: args.format,
@@ -198,6 +201,41 @@ impl HudApp {
             history: VecDeque::with_capacity(HISTORY_CAPACITY),
             prefs,
             last_window_size: None,
+        };
+
+        if let Some(substring) = args.midi_port.as_deref() {
+            app.try_connect_by_name(substring);
+        }
+
+        app
+    }
+
+    /// Re-enumerate MIDI ports and keep [`selected_port`] aligned with the
+    /// previously selected port name when it still exists.
+    fn refresh_midi_ports(&mut self) {
+        let prev_name = self.midi_ports.get(self.selected_port).cloned();
+        self.midi_ports = MidiOut::list_ports();
+        if let Some(name) = prev_name {
+            if let Some(index) = self.midi_ports.iter().position(|p| p == &name) {
+                self.selected_port = index;
+            } else if self.selected_port >= self.midi_ports.len() {
+                self.selected_port = 0;
+            }
+        } else if self.selected_port >= self.midi_ports.len() {
+            self.selected_port = 0;
+        }
+    }
+
+    /// Connect to the first port whose name contains `substring`.
+    fn try_connect_by_name(&mut self, substring: &str) {
+        let Some(index) = MidiOut::find_port_index_by_name(substring) else {
+            self.midi_status = Some((format!("no MIDI port matching '{substring}'"), true));
+            return;
+        };
+        self.selected_port = index;
+        match self.midi.connect_index(index) {
+            Ok(()) => self.after_connect(),
+            Err(error) => self.midi_status = Some((format!("connect failed: {error}"), true)),
         }
     }
 
@@ -410,12 +448,14 @@ impl HudApp {
                         .unwrap_or_else(|| "(no ports)".to_owned()),
                 )
                 .show_ui(ui, |ui| {
+                    // Popup is open — pick up ports created since last frame.
+                    self.refresh_midi_ports();
                     for (index, name) in self.midi_ports.iter().enumerate() {
                         ui.selectable_value(&mut self.selected_port, index, name);
                     }
                 });
             if ui.button("⟳").on_hover_text("Refresh the port list").clicked() {
-                self.midi_ports = MidiOut::list_ports();
+                self.refresh_midi_ports();
             }
             if ui.button("Connect").clicked() {
                 match self.midi.connect_index(self.selected_port) {
@@ -475,6 +515,17 @@ impl HudApp {
             } else {
                 ui.weak(status);
             }
+        }
+        if self.midi_ports.len() == 1
+            && self
+                .midi_ports
+                .first()
+                .is_some_and(|name| name.contains(GS_WAVETABLE_SUBSTR))
+        {
+            ui.weak(
+                "Microsoft GS Wavetable Synth does not support MPE — install loopMIDI \
+                 and route to Surge XT (or another MPE-capable synth).",
+            );
         }
     }
 

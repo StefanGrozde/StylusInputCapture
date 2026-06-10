@@ -2,7 +2,8 @@
 //!
 //! Mirrors `tablet-ui`'s hand-rolled parser (same `--tcp` / `--pipe` /
 //! `--format` / `--spawn` conventions) and adds `--profile` (a calibration
-//! profile to clean up the raw signal) and `--mapping` (a `*.midimap.toml`).
+//! profile to clean up the raw signal), `--mapping` (a `*.midimap.toml`), and
+//! `--midi-port` (auto-connect to a MIDI output by name substring).
 
 use std::{env, ffi::OsString, path::PathBuf};
 
@@ -16,6 +17,9 @@ pub struct Args {
     pub spawn: bool,
     pub profile: Option<PathBuf>,
     pub mapping: Option<PathBuf>,
+    /// Auto-connect on startup to the first MIDI output port whose name
+    /// contains this substring (e.g. `loopMIDI` or `tablet-hud`).
+    pub midi_port: Option<String>,
 }
 
 impl Default for Args {
@@ -26,6 +30,7 @@ impl Default for Args {
             spawn: false,
             profile: None,
             mapping: None,
+            midi_port: None,
         }
     }
 }
@@ -91,6 +96,9 @@ impl Args {
                 }
                 "--mapping" => {
                     parsed.mapping = Some(PathBuf::from(next_value(&mut iter, "--mapping")?));
+                }
+                "--midi-port" => {
+                    parsed.midi_port = Some(next_value(&mut iter, "--midi-port")?);
                 }
                 "--spawn" => parsed.spawn = true,
                 flag if flag.starts_with('-') => {
@@ -163,6 +171,7 @@ mod tests {
         assert!(!args.spawn);
         assert_eq!(args.profile, None);
         assert_eq!(args.mapping, None);
+        assert_eq!(args.midi_port, None);
     }
 
     #[test]
@@ -192,5 +201,12 @@ mod tests {
             Args::parse_from(["--format", "yaml"]).unwrap_err(),
             ParseError::InvalidFormat("yaml".to_owned())
         );
+    }
+
+    #[test]
+    fn parses_midi_port_flag() {
+        let args = Args::parse_from(["--midi-port", "loopMIDI", "--spawn"]).unwrap();
+        assert_eq!(args.midi_port, Some("loopMIDI".to_owned()));
+        assert!(args.spawn);
     }
 }

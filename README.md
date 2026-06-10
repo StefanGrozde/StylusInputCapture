@@ -87,10 +87,35 @@ cargo run -p tablet-hud -- --tcp 127.0.0.1:9123   # HUD
 
 - **Virtual ports** are created on macOS/Linux; on **Windows** install a
   loopback driver (e.g. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html))
-  and connect to its port instead.
+  and connect to its port instead. The built-in **Microsoft GS Wavetable Synth**
+  ignores MPE (per-channel pitch bend / CC74), so it will not sound correct —
+  route to an MPE-capable synth such as [Surge XT](https://surge-synthesizer.github.io/).
 - On Linux the `midir` backend needs ALSA dev headers (`libasound2-dev`). Build
   without MIDI output (`--no-default-features`) to compile the HUD on systems
   that lack them.
+
+### Routing MPE to Surge XT (Windows + loopMIDI)
+
+1. Install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and
+   create a port (e.g. `tablet-hud`).
+2. Start the HUD and connect to that port (dropdown auto-refreshes when opened;
+   the last-used port is remembered across runs):
+   ```powershell
+   cargo run -p tablet-hud -- --spawn --midi-port tablet-hud
+   ```
+   Or pick the port manually in the top bar and click **Connect** — the app sends
+   MPE setup messages automatically.
+3. In **Surge XT** standalone: set **MIDI input** to the same loopMIDI port and
+   enable **MPE** (Menu → MPE, or the MPE button).
+4. Match Surge XT's **pitch-bend range** to the HUD sidebar value **bend range
+   (st)** (default **48** semitones). A mismatch makes vertical pen motion sound
+   out of tune.
+5. Click **Test note** in the HUD top bar to verify audio, then play the pad
+   surface.
+
+**Manual verification (not automated):** confirm Surge XT receives MPE from the
+HUD after the steps above — pen pressure, per-note pitch bend, and CC74 should
+all respond on separate member channels.
 
 ## Fidelity notes (Raw Input backend)
 
