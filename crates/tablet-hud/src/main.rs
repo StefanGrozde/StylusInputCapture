@@ -1,11 +1,14 @@
 mod app;
 mod cli;
 mod midi_out;
+mod prefs;
+mod theme;
 
 use eframe::egui;
 
 use app::HudApp;
 use cli::Args;
+use prefs::HudPrefs;
 
 fn main() -> eframe::Result<()> {
     let args = match Args::parse_env() {
@@ -16,10 +19,13 @@ fn main() -> eframe::Result<()> {
         }
     };
 
+    let prefs = HudPrefs::load();
+    let (width, height) = prefs.window_size.unwrap_or((1280.0, 800.0));
+
     let viewport = egui::ViewportBuilder::default()
         .with_title("Tablet MPE HUD")
         .with_min_inner_size(egui::vec2(960.0, 640.0))
-        .with_inner_size(egui::vec2(1280.0, 800.0));
+        .with_inner_size(egui::vec2(width, height));
 
     let options = eframe::NativeOptions {
         viewport,
@@ -29,6 +35,9 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Tablet MPE HUD",
         options,
-        Box::new(|_cc| Ok(Box::new(HudApp::new(args)))),
+        Box::new(move |cc| {
+            theme::apply(&cc.egui_ctx);
+            Ok(Box::new(HudApp::new(args, prefs)))
+        }),
     )
 }

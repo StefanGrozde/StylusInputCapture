@@ -73,6 +73,31 @@ impl MpeEngine {
         self.voice.map(|v| v.pad)
     }
 
+    /// The MPE member channel carrying the active voice (for HUD meters).
+    pub fn active_channel(&self) -> Option<u8> {
+        self.voice.map(|v| v.channel)
+    }
+
+    /// Last emitted pitch-bend value (14-bit, 8192 = center), if any.
+    pub fn last_bend(&self) -> Option<u16> {
+        self.last_bend
+    }
+
+    /// Last emitted CC74 (timbre) value, if any.
+    pub fn last_cc74(&self) -> Option<u8> {
+        self.last_cc74
+    }
+
+    /// Last emitted channel-pressure value, if any.
+    pub fn last_pressure(&self) -> Option<u8> {
+        self.last_pressure
+    }
+
+    /// Last emitted tilt-CC value, if any.
+    pub fn last_tilt_cc(&self) -> Option<u8> {
+        self.last_tilt_cc
+    }
+
     /// Process one sample, pushing any resulting events onto `out`.
     pub fn process(&mut self, s: &ProcessedSample, m: &MidiMapping, out: &mut Vec<MidiEvent>) {
         if !s.active {
@@ -739,6 +764,43 @@ mod tests {
             .filter(|e| matches!(e, MidiEvent::ControlChange { controller: 123, .. }))
             .count();
         assert_eq!(off_sweep as u8, m.mpe.member_count());
+    }
+
+    #[test]
+    fn expression_getters_mirror_emitted_values_and_reset_on_release() {
+        let mut e = MpeEngine::new();
+        let mut m = mapping();
+        m.mode = NoteMode::Hold;
+        let mut out = Vec::new();
+
+        assert_eq!(e.active_channel(), None);
+        assert_eq!(e.last_bend(), None);
+
+        // Strike at pressure 0.5: bend starts centered, CC74 at the neutral
+        // 64, channel pressure at 64. The getters must mirror exactly what
+        // `process` emitted.
+        let (x, y) = pad_center(0, 2);
+        e.process(&sample(x, y, 0.5, true), &m, &mut out);
+        assert_eq!(e.active_channel(), Some(e.voice.unwrap().channel));
+        assert_eq!(e.last_bend(), Some(PITCH_BEND_CENTER));
+        assert_eq!(e.last_cc74(), Some(64));
+        assert_eq!(e.last_pressure(), Some(64));
+        assert_eq!(e.last_tilt_cc(), None, "tilt CC disabled in this mapping");
+
+        // Dragging up emits a new bend; the getter follows it.
+        out.clear();
+        e.process(&sample(x, y - 0.25, 0.5, true), &m, &mut out);
+        let bend = e.last_bend().unwrap();
+        assert!(bend > PITCH_BEND_CENTER);
+
+        // Release: voice gone and all expression state reset.
+        out.clear();
+        e.process(&sample(x, y, 0.0, false), &m, &mut out);
+        assert_eq!(e.active_channel(), None);
+        assert_eq!(e.last_bend(), None);
+        assert_eq!(e.last_cc74(), None);
+        assert_eq!(e.last_pressure(), None);
+        assert_eq!(e.last_tilt_cc(), None);
     }
 
     #[test]
