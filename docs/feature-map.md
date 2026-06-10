@@ -56,6 +56,7 @@ stable** — they are what `settings.toml` stores; never rename one.
 | `load_mapping` | Load mapping file | MIDI & files | — |
 | `save_mapping` | Save mapping file | MIDI & files | — |
 | `toggle_settings` | Show/hide settings | App | — |
+| `show_pen_guide` | Show pen guide | App | — |
 
 Not in the registry (deliberately): the **Virtual port** button (platform
 dependent), sliders/combos (continuous, not chord-shaped), and the pen tip
@@ -105,7 +106,7 @@ pad reports reach Raw Input (driverless setups, or driver pass-through). See
 | File | Location | Owns | Code |
 | --- | --- | --- | --- |
 | `settings.toml` | OS config dir (`%APPDATA%\tablet-hud\config\` on Windows) | Keybindings + future app settings | `crates/tablet-hud/src/settings.rs` |
-| `tablet-hud.toml` | same dir | Incidental prefs: window size, last port, last mapping path | `crates/tablet-hud/src/prefs.rs` |
+| `tablet-hud.toml` | same dir | Incidental prefs: window size, last port, last mapping path, pens already introduced by the pen guide (§6) | `crates/tablet-hud/src/prefs.rs` |
 | `*.midimap.toml` / `.json` | user-chosen path | Portable instrument preset (`MidiMapping`) | `crates/tablet-midi/src/mapping.rs` |
 | Calibration profile | user-chosen path (`--profile`) | Signal processing (`CalibrationProfile`) | `crates/tablet-process` |
 
@@ -132,3 +133,30 @@ pad HID report → tablet-rawinput (edge diff) → SampleEvent::TabletButton
 - Compatibility: consumers built before this kind existed fail a stream
   containing it with `StreamError::UnknownKind(0x06)`. Producer and consumers
   ship together in this repo; rebuild both sides.
+
+## 6. Pen guide modal (`crates/tablet-hud/src/pen_guide.rs`)
+
+The first time a pen the user has never used comes into range, the HUD shows a
+modal with a drawn stylus and bullet points listing that pen's motions/inputs
+and what each is currently bound to (sourced live from `MidiMapping` and the
+keymap, so the text never drifts from actual behavior).
+
+- **Identity is a capability fingerprint** (`PenSignature`): device name +
+  `tool_serial` + presence of tilt / twist / tangent-pressure / rotation. The
+  stream carries no pen model name, and on the Raw Input backend
+  `tool_serial` is always 0 — but the per-sample `Option` axes are populated
+  strictly from the device/tool profile on both backends, so the feature set
+  is what distinguishes pen models (which is also exactly what the guide's
+  content depends on). Pens with identical feature sets are indistinguishable
+  and would get an identical guide anyway. `ToolKind` is excluded: on Raw
+  Input it flips to `Eraser` while the invert switch asserts, which would
+  re-introduce the same pen mid-stroke.
+- **Trigger** (`PenTracker`): a signature must hold for 8 consecutive samples
+  (~50 ms) before it counts as a pen change — one glitched packet can't flash
+  the modal. Tilt-only-vs-no-tilt and similar differences re-trigger it; the
+  same pen never does.
+- **Persistence**: **Got it** records the pen in `seen_pens` inside
+  `tablet-hud.toml`; dismissing any other way (click outside / Esc) skips it
+  for this run only. Delete the prefs file to re-introduce all pens.
+- **Re-open on demand**: the `show_pen_guide` action (§2), also a button in
+  the Settings window footer.

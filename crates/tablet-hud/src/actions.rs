@@ -53,11 +53,13 @@ pub enum Action {
     // ── App ──────────────────────────────────────────────────────────────
     /// Show / hide the Settings window.
     ToggleSettings,
+    /// Re-open the pen guide for the pen currently in use.
+    ShowPenGuide,
 }
 
 impl Action {
     /// Every action, in settings-window display order.
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 19] = [
         Action::Panic,
         Action::TestNote,
         Action::OctaveUp,
@@ -76,6 +78,7 @@ impl Action {
         Action::LoadMapping,
         Action::SaveMapping,
         Action::ToggleSettings,
+        Action::ShowPenGuide,
     ];
 
     /// Stable string id used in `settings.toml`. **Never change an existing
@@ -100,6 +103,7 @@ impl Action {
             Action::LoadMapping => "load_mapping",
             Action::SaveMapping => "save_mapping",
             Action::ToggleSettings => "toggle_settings",
+            Action::ShowPenGuide => "show_pen_guide",
         }
     }
 
@@ -130,6 +134,7 @@ impl Action {
             Action::LoadMapping => "Load mapping file",
             Action::SaveMapping => "Save mapping file",
             Action::ToggleSettings => "Show/hide settings",
+            Action::ShowPenGuide => "Show pen guide",
         }
     }
 
@@ -152,7 +157,7 @@ impl Action {
             | Action::RefreshPorts
             | Action::LoadMapping
             | Action::SaveMapping => "MIDI & files",
-            Action::ToggleSettings => "App",
+            Action::ToggleSettings | Action::ShowPenGuide => "App",
         }
     }
 }

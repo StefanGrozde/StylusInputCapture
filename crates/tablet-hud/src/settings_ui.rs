@@ -66,6 +66,16 @@ impl HudApp {
                 self.settings_status = Some("bindings reset to defaults".to_owned());
                 self.save_settings();
             }
+            if ui
+                .button("Pen guide")
+                .on_hover_text(
+                    "Re-open the pen guide for the current pen (it appears \
+                     automatically the first time a pen is used)",
+                )
+                .clicked()
+            {
+                self.execute_action(Action::ShowPenGuide);
+            }
         });
         if let Some(status) = &self.settings_status {
             ui.add_space(4.0);

@@ -20,6 +20,8 @@ use std::path::PathBuf;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use crate::pen_guide::PenSignature;
+
 /// File name for the HUD-preferences file, written inside the resolved config
 /// directory.
 const PREFS_FILE_NAME: &str = "tablet-hud.toml";
@@ -41,6 +43,12 @@ pub struct HudPrefs {
     /// Path to the last mapping that was loaded or saved. Prefills the
     /// mapping-path field when `--mapping` is not given at startup.
     pub last_mapping_path: Option<PathBuf>,
+
+    /// Pens already introduced by the pen-guide modal; matching pens never
+    /// re-trigger it. Cleared by deleting this file. `#[serde(default)]` so
+    /// prefs files written before this field existed keep loading whole.
+    #[serde(default)]
+    pub seen_pens: Vec<PenSignature>,
 }
 
 impl HudPrefs {
@@ -112,6 +120,12 @@ mod tests {
             window_size: Some((1280.0, 800.0)),
             last_midi_port: Some("Synth MIDI In".to_owned()),
             last_mapping_path: Some(PathBuf::from("C:/mappings/lead.midimap.toml")),
+            seen_pens: vec![PenSignature {
+                device_name: "Wacom Intuos Pro".to_owned(),
+                tool_serial: 1,
+                has_tilt: true,
+                ..PenSignature::default()
+            }],
         };
 
         let dir = std::env::temp_dir().join(format!(
@@ -131,6 +145,18 @@ mod tests {
         assert_eq!(prefs, prefs_back);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A prefs file written before `seen_pens` existed must load its other
+    /// fields intact (not collapse to whole-struct defaults).
+    #[test]
+    fn file_without_seen_pens_keeps_other_fields() {
+        let parsed: HudPrefs =
+            toml::from_str("window_size = [1024.0, 768.0]\nlast_midi_port = \"loopMIDI\"")
+                .unwrap();
+        assert_eq!(parsed.window_size, Some((1024.0, 768.0)));
+        assert_eq!(parsed.last_midi_port.as_deref(), Some("loopMIDI"));
+        assert!(parsed.seen_pens.is_empty());
     }
 
     /// `Default` round-trips through TOML too (an empty/near-empty prefs file
