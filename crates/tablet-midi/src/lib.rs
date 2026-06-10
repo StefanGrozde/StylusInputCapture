@@ -15,6 +15,7 @@
 
 pub mod engine;
 pub mod event;
+pub mod expression;
 pub mod mapping;
 pub mod pads;
 pub mod scale;
@@ -22,6 +23,7 @@ pub mod vibrato;
 
 pub use engine::MpeEngine;
 pub use event::{MidiBytes, MidiEvent, CC_ALL_NOTES_OFF, CC_TIMBRE, PITCH_BEND_CENTER};
+pub use expression::{ExpressionSnapshot, Rgb, TrailColorScheme};
 pub use mapping::{
     GridConfig, MappingError, MidiMapping, MpeConfig, NoteMode, TiltAxis, TiltCc, VelocitySource,
 };

@@ -23,8 +23,8 @@ use tablet_consumer::{
 };
 use tablet_core::{DeviceCapabilities, PenSample};
 use tablet_midi::{
-    is_root, pad_at, pad_note, MidiEvent, MidiMapping, MpeEngine, NoteMode, Pad, ScaleKind,
-    TiltAxis, TiltCc, VelocitySource, PITCH_BEND_CENTER, PITCH_CLASS_NAMES,
+    is_root, pad_at, pad_note, ExpressionSnapshot, MidiEvent, MidiMapping, MpeEngine, NoteMode,
+    Pad, Rgb, ScaleKind, TiltAxis, TiltCc, VelocitySource, PITCH_BEND_CENTER, PITCH_CLASS_NAMES,
 };
 use tablet_process::{CalibrationProfile, ProcessedSample, ProcessorState};
 use tablet_stream::{Format, StreamMessage};
@@ -41,7 +41,7 @@ use crate::theme;
 const GS_WAVETABLE_SUBSTR: &str = "Microsoft GS Wavetable Synth";
 
 /// Bounded ring of recent points drawn as the fading trail on the surface.
-const HISTORY_CAPACITY: usize = 512;
+const HISTORY_CAPACITY: usize = 1024;
 
 /// Bounded ring of recent NoteOn/NoteOff entries in the Activity section.
 const ACTIVITY_CAPACITY: usize = 64;
@@ -53,8 +53,9 @@ const FLASH_DURATION: Duration = Duration::from_millis(150);
 struct HudPoint {
     x: f64,
     y: f64,
-    pressure: f64,
+    pen_pressure: f64,
     active: bool,
+    expression: Option<ExpressionSnapshot>,
 }
 
 pub struct HudApp {
@@ -345,11 +346,14 @@ impl HudApp {
         if self.history.len() == HISTORY_CAPACITY {
             self.history.pop_front();
         }
+        let expression =
+            ExpressionSnapshot::from_performance(&self.engine, &processed, &self.mapping);
         self.history.push_back(HudPoint {
             x: processed.x,
             y: processed.y,
-            pressure: processed.pressure,
+            pen_pressure: processed.pressure,
             active: processed.active,
+            expression,
         });
         self.latest_processed = Some(processed);
     }
@@ -465,6 +469,10 @@ impl HudApp {
             Action::LoadMapping => self.load_mapping(),
             Action::SaveMapping => self.save_mapping(),
             Action::ToggleSettings => self.settings_open = !self.settings_open,
+            Action::ToggleTrailColor => {
+                self.settings.trail_color.enabled = !self.settings.trail_color.enabled;
+                self.save_settings();
+            }
         }
     }
 
@@ -809,6 +817,28 @@ impl HudApp {
                             .text("full-scale tilt (°)"),
                     );
                 }
+            });
+
+        egui::CollapsingHeader::new("Trail color")
+            .default_open(false)
+            .show(ui, |ui| {
+                let mut dirty = false;
+                dirty |= ui
+                    .checkbox(
+                        &mut self.settings.trail_color.enabled,
+                        "expression-driven color (HSV)",
+                    )
+                    .changed();
+                dirty |= ui
+                    .checkbox(
+                        &mut self.settings.trail_color.show_legend,
+                        "show color legend in meters",
+                    )
+                    .changed();
+                if dirty {
+                    self.save_settings();
+                }
+                ui.weak("hue ← bend · saturation ← CC74 · brightness ← pressure");
             });
 
         egui::CollapsingHeader::new("Vibrato")
@@ -1165,25 +1195,45 @@ impl HudApp {
     }
 
     fn draw_trail(&self, painter: &egui::Painter, rect: Rect) {
-        let count = self.history.len().max(1);
-        for (idx, point) in self.history.iter().enumerate() {
-            if !point.active {
-                continue;
-            }
-            let age = (idx + 1) as f32 / count as f32;
+        let points: Vec<_> = self.history.iter().copied().collect();
+        if points.len() < 2 {
+            return;
+        }
+        let count = points.len().max(1);
+        let scheme = &self.settings.trail_color;
+        for (idx, pair) in points.windows(2).enumerate() {
+            let a = pair[0];
+            let b = pair[1];
+            let age = (idx + 2) as f32 / count as f32;
             let alpha = (20.0 + 150.0 * age).round() as u8;
-            let pos = surface_pos(point.x, point.y, rect);
-            let radius = 1.5 + 4.0 * point.pressure as f32;
-            painter.circle_filled(
-                pos,
-                radius,
-                Color32::from_rgba_unmultiplied(
-                    theme::TRAIL.r(),
-                    theme::TRAIL.g(),
-                    theme::TRAIL.b(),
-                    alpha,
-                ),
-            );
+            let pos_a = surface_pos(a.x, a.y, rect);
+            let pos_b = surface_pos(b.x, b.y, rect);
+            let pressure = ((a.pen_pressure + b.pen_pressure) * 0.5).clamp(0.0, 1.0) as f32;
+            let width = if a.active && b.active {
+                1.25 + pressure * 5.0
+            } else {
+                1.0
+            };
+            let (rgb, dashed) = if !a.active || !b.active {
+                (theme::TRAIL_NEUTRAL, true)
+            } else if scheme.enabled {
+                match (a.expression, b.expression) {
+                    (Some(expr_a), Some(expr_b)) => {
+                        let blended = expr_a.lerp(expr_b, 0.5);
+                        (blended.to_rgb(scheme), false)
+                    }
+                    _ => (theme::TRAIL_NEUTRAL, true),
+                }
+            } else {
+                (theme::TRAIL_FALLBACK, false)
+            };
+            let color = Color32::from_rgba_unmultiplied(rgb.r, rgb.g, rgb.b, alpha);
+            let stroke = Stroke::new(width, color);
+            if dashed {
+                dashed_segment(painter, pos_a, pos_b, stroke);
+            } else {
+                painter.line_segment([pos_a, pos_b], stroke);
+            }
         }
     }
 
@@ -1286,6 +1336,70 @@ impl HudApp {
                 let v = self.engine.last_tilt_cc().map(seven_bit_frac).unwrap_or(0.0);
                 meter_widget(ui, &format!("tilt CC{}", tilt.controller), v, active, false);
             }
+
+            if self.settings.trail_color.show_legend {
+                ui.separator();
+                self.draw_trail_legend(ui);
+            }
+        });
+    }
+
+    /// HSV gradient strip with a live marker at the current expression color.
+    fn draw_trail_legend(&self, ui: &mut egui::Ui) {
+        ui.vertical(|ui| {
+            ui.label(
+                RichText::new("trail color")
+                    .size(10.0)
+                    .color(theme::ACCENT_DIM),
+            );
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(120.0, 16.0), Sense::hover());
+            let painter = ui.painter_at(rect);
+            let scheme = &self.settings.trail_color;
+            let steps = 24usize;
+            let slice_w = rect.width() / steps as f32;
+            for i in 0..steps {
+                let t = i as f32 / (steps - 1).max(1) as f32;
+                let snap = ExpressionSnapshot {
+                    bend_norm: t * 2.0 - 1.0,
+                    cc74_norm: 0.5,
+                    pressure_norm: 0.8,
+                    tilt_norm: None,
+                };
+                let rgb = snap.to_rgb(scheme);
+                let x0 = rect.left() + slice_w * i as f32;
+                let seg = Rect::from_min_max(
+                    Pos2::new(x0, rect.top()),
+                    Pos2::new(x0 + slice_w + 0.5, rect.bottom()),
+                );
+                painter.rect_filled(seg, 0.0, rgb_to_color32(rgb, 255));
+            }
+            painter.rect_stroke(
+                rect,
+                2.0,
+                Stroke::new(1.0, theme::PAD_STROKE),
+                egui::StrokeKind::Inside,
+            );
+            if let Some(processed) = &self.latest_processed {
+                if let Some(expr) =
+                    ExpressionSnapshot::from_performance(&self.engine, processed, &self.mapping)
+                {
+                    let rgb = expr.to_rgb(scheme);
+                    let marker_x = rect.left()
+                        + ((expr.bend_norm + 1.0) * 0.5).clamp(0.0, 1.0) * rect.width();
+                    let marker_y = rect.center().y
+                        - (expr.cc74_norm - 0.5) * rect.height() * 0.8;
+                    painter.circle_filled(
+                        Pos2::new(marker_x, marker_y),
+                        4.0,
+                        rgb_to_color32(rgb, 255),
+                    );
+                    painter.circle_stroke(
+                        Pos2::new(marker_x, marker_y),
+                        4.0,
+                        Stroke::new(1.5, Color32::WHITE),
+                    );
+                }
+            }
         });
     }
 }
@@ -1310,6 +1424,27 @@ fn meter_widget(ui: &mut egui::Ui, label: &str, frac: f32, active: bool, bipolar
 /// Map a 7-bit MIDI value onto `[0, 1]` for the meter bars.
 fn seven_bit_frac(v: u8) -> f32 {
     f32::from(v) / 127.0
+}
+
+fn rgb_to_color32(rgb: Rgb, alpha: u8) -> Color32 {
+    Color32::from_rgba_unmultiplied(rgb.r, rgb.g, rgb.b, alpha)
+}
+
+fn dashed_segment(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke) {
+    let delta = b - a;
+    let length = delta.length();
+    if length <= f32::EPSILON {
+        return;
+    }
+    let direction = delta / length;
+    let dash = 7.0;
+    let gap = 5.0;
+    let mut offset = 0.0;
+    while offset < length {
+        let end = (offset + dash).min(length);
+        painter.line_segment([a + direction * offset, a + direction * end], stroke);
+        offset += dash + gap;
+    }
 }
 
 /// "C#3"-style label for a MIDI note number (C4 = 60).
@@ -1421,7 +1556,7 @@ impl eframe::App for HudApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             egui::Panel::bottom("hud_meters")
                 .resizable(false)
-                .default_size(84.0)
+                .default_size(110.0)
                 .show_inside(ui, |ui| self.draw_meters(ui));
             egui::CentralPanel::default().show_inside(ui, |ui| self.draw_surface(ui));
         });

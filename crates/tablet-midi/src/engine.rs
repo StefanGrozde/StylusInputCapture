@@ -87,6 +87,11 @@ impl MpeEngine {
         self.voice.map(|v| v.channel)
     }
 
+    /// Surface position where the active note was struck (for trail color).
+    pub fn strike_origin(&self) -> Option<(f64, f64)> {
+        self.voice.map(|v| (v.x_origin, v.y_origin))
+    }
+
     /// Last emitted pitch-bend value (14-bit, 8192 = center), if any.
     pub fn last_bend(&self) -> Option<u16> {
         self.last_bend

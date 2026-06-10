@@ -15,6 +15,8 @@ use std::path::PathBuf;
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use tablet_midi::TrailColorScheme;
+
 use crate::bindings::Keymap;
 
 /// File name for the settings file, inside the resolved config directory.
@@ -22,11 +24,23 @@ const SETTINGS_FILE_NAME: &str = "settings.toml";
 
 /// All persisted app settings. Every field carries `#[serde(default)]` so
 /// files written by older versions keep loading as new fields are added.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HudSettings {
     /// Input chord → action bindings.
     #[serde(default)]
     pub keymap: Keymap,
+    /// Expression-driven pen trail color (HSV composite mapping).
+    #[serde(default)]
+    pub trail_color: TrailColorScheme,
+}
+
+impl Default for HudSettings {
+    fn default() -> Self {
+        Self {
+            keymap: Keymap::default(),
+            trail_color: TrailColorScheme::default(),
+        }
+    }
 }
 
 impl HudSettings {

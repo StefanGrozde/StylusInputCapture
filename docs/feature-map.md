@@ -30,6 +30,30 @@ MPE session setup (zone MCM + per-member bend range RPN) is pushed by
 `mpe_init_events` (`crates/tablet-hud/src/midi_out.rs`) on connect and on
 live MPE edits.
 
+## 1b. Trail color visualization (expression → HSV)
+
+While a note is held, the pen trail on the playing surface encodes the same MPE
+expression axes sent to MIDI. Each history point stores an
+[`ExpressionSnapshot`](crates/tablet-midi/src/expression.rs) captured after
+`MpeEngine::process`; segments are drawn as connected strokes with age fade and
+pen-pressure width.
+
+| Visual channel | MIDI source | Sidebar meter |
+| --- | --- | --- |
+| Hue (warm ↔ cool) | Pitch bend | `bend` (bipolar) |
+| Saturation (muted ↔ vivid) | CC74 timbre | `CC74` |
+| Brightness | Channel pressure | `pressure` |
+| Hue offset (optional) | Tilt CC | `tilt CCn` |
+
+Configuration lives in `settings.toml` as `[trail_color]` (`TrailColorScheme` in
+`crates/tablet-hud/src/settings.rs`): `enabled` (default on), `show_legend`
+(default on). The meters strip shows a hue gradient with a live marker when
+`show_legend` is set. Toggle expression color via the sidebar **Trail color**
+section or the `toggle_trail_color` action. When disabled, the trail reverts to
+the fixed cyan accent (`theme::TRAIL_FALLBACK`).
+
+Trail hue uses pen **Y displacement from the note strike** (`ExpressionSnapshot::from_performance`), not the raw MIDI pitch-bend value — the latter is scaled by the 48-st MPE range so typical `y_bend_semitones` moves barely shift hue when read from `last_bend()`.
+
 ## 2. Discrete actions (the bindable registry)
 
 Defined in `crates/tablet-hud/src/actions.rs`; executed by
@@ -57,6 +81,7 @@ stable** — they are what `settings.toml` stores; never rename one.
 | `load_mapping` | Load mapping file | MIDI & files | — |
 | `save_mapping` | Save mapping file | MIDI & files | — |
 | `toggle_settings` | Show/hide settings | App | — |
+| `toggle_trail_color` | Toggle expression trail color | App | — |
 
 Not in the registry (deliberately): the **Virtual port** button (platform
 dependent), sliders/combos (continuous, not chord-shaped), and the pen tip
@@ -105,7 +130,7 @@ pad reports reach Raw Input (driverless setups, or driver pass-through). See
 
 | File | Location | Owns | Code |
 | --- | --- | --- | --- |
-| `settings.toml` | OS config dir (`%APPDATA%\tablet-hud\config\` on Windows) | Keybindings + future app settings | `crates/tablet-hud/src/settings.rs` |
+| `settings.toml` | OS config dir (`%APPDATA%\tablet-hud\config\` on Windows) | Keybindings + trail color scheme (`[trail_color]`) | `crates/tablet-hud/src/settings.rs` |
 | `tablet-hud.toml` | same dir | Incidental prefs: window size, last port, last mapping path | `crates/tablet-hud/src/prefs.rs` |
 | `*.midimap.toml` / `.json` | user-chosen path | Portable instrument preset (`MidiMapping`, including `[vibrato]`) | `crates/tablet-midi/src/mapping.rs` |
 | Calibration profile | user-chosen path (`--profile`) | Signal processing (`CalibrationProfile`) | `crates/tablet-process` |

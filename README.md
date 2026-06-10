@@ -74,7 +74,10 @@ vertical position → **CC74** (timbre), pen pressure → **channel pressure**, 
 note on its own MPE member channel. The mapping logic lives in the pure
 `tablet-midi` crate; `tablet-hud` is the egui app (top bar / mapping sidebar /
 playing surface) that reads the stream and drives MIDI via
-[`midir`](https://crates.io/crates/midir).
+[`midir`](https://crates.io/crates/midir). The pen trail encodes live MPE
+expression as color: **hue** follows pitch bend, **saturation** follows CC74
+timbre, and **brightness** follows channel pressure (toggle in sidebar **Trail
+color** or bind `toggle_trail_color`).
 
 ```powershell
 # Spawn the capturer and play, picking a MIDI port (or "Virtual port") in the top bar:

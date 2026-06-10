@@ -7,6 +7,7 @@
 //! `bipolar_bar`) are shared by the top bar and the meters strip.
 
 use eframe::egui::{self, Color32, CornerRadius, Pos2, Rect, Stroke, Vec2};
+use tablet_midi::Rgb;
 
 // ── Palette ─────────────────────────────────────────────────────────────────
 
@@ -41,8 +42,18 @@ pub const STATUS_ERR: Color32 = Color32::from_rgb(235, 90, 90);
 /// A neutral gray dot for "not connected / idle".
 pub const STATUS_IDLE: Color32 = Color32::from_rgb(110, 112, 120);
 
-/// Fading pen trail on the surface (alpha applied per point).
-pub const TRAIL: Color32 = Color32::from_rgb(80, 190, 255);
+/// Fixed accent trail RGB (expression color off).
+pub const TRAIL_FALLBACK: Rgb = Rgb {
+    r: 80,
+    g: 190,
+    b: 255,
+};
+/// Neutral gray for inactive / silent trail segments.
+pub const TRAIL_NEUTRAL: Rgb = Rgb {
+    r: 110,
+    g: 115,
+    b: 125,
+};
 /// Pen cursor while pressing / while hovering.
 pub const CURSOR_ACTIVE: Color32 = Color32::from_rgb(255, 220, 90);
 pub const CURSOR_HOVER: Color32 = Color32::from_rgb(150, 150, 160);
