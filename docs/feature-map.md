@@ -21,6 +21,7 @@ on/off switches are also bindable actions (§2).
 | Slide onto another pad | latch / glide-bend / retrigger | `mode` (`NoteMode::Hold` / `Glide` / `Discrete`) | |
 | Pressure at pen-down | `NoteOn` velocity | `velocity` (`Fixed` or `Pressure { min, max }`) | Velocity floor keeps attacks audible |
 | Drag up/down from strike | `PitchBend` (14-bit) | `y_bend_semitones`, `mpe.pitch_bend_range_semitones` | Glide mode bends toward the pointed pad instead |
+| Rapid Y wiggle while held | `PitchBend` (14-bit, LFO layer) | `vibrato.*` (`enabled_by_default`, `default_rate_hz`, `default_depth_semitones`, `max_depth_semitones`, `fade_in_ms`, `depth_smoothing_ms`, `gesture_deadzone`, `y_axis_to_amount`, `pressure_to_amount`) | Automatic gesture detection; combines with manual Y bend (`final = manual + sin(phase)×depth`); frame `tick(dt)` from HUD |
 | Drag left/right from strike | `CC74` (timbre/brightness) | `x_to_cc74` | Strike point is the neutral center (64) |
 | Pressure while held | `ChannelPressure` | `pressure_to_channel_pressure` | The MPE "press" dimension |
 | Tilt (X or Y) | configurable `CC` | `tilt_cc` (`controller`, `axis`, `range_deg`) | Default: tilt X → CC1 (mod wheel) |
@@ -106,7 +107,7 @@ pad reports reach Raw Input (driverless setups, or driver pass-through). See
 | --- | --- | --- | --- |
 | `settings.toml` | OS config dir (`%APPDATA%\tablet-hud\config\` on Windows) | Keybindings + future app settings | `crates/tablet-hud/src/settings.rs` |
 | `tablet-hud.toml` | same dir | Incidental prefs: window size, last port, last mapping path | `crates/tablet-hud/src/prefs.rs` |
-| `*.midimap.toml` / `.json` | user-chosen path | Portable instrument preset (`MidiMapping`) | `crates/tablet-midi/src/mapping.rs` |
+| `*.midimap.toml` / `.json` | user-chosen path | Portable instrument preset (`MidiMapping`, including `[vibrato]`) | `crates/tablet-midi/src/mapping.rs` |
 | Calibration profile | user-chosen path (`--profile`) | Signal processing (`CalibrationProfile`) | `crates/tablet-process` |
 
 Settings load never fails (missing/invalid → defaults) and save on change plus

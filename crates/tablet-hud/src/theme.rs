@@ -46,6 +46,8 @@ pub const TRAIL: Color32 = Color32::from_rgb(80, 190, 255);
 /// Pen cursor while pressing / while hovering.
 pub const CURSOR_ACTIVE: Color32 = Color32::from_rgb(255, 220, 90);
 pub const CURSOR_HOVER: Color32 = Color32::from_rgb(150, 150, 160);
+/// Vibrato-active glow around the stylus (distinct from the cyan accent).
+pub const VIBRATO: Color32 = Color32::from_rgb(255, 55, 55);
 
 /// Fill of the sounding pad, brightness following pen pressure (the same
 /// cyan ramp the old inline code used, now in the accent hue).
