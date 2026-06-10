@@ -53,11 +53,13 @@ pub enum Action {
     // ── App ──────────────────────────────────────────────────────────────
     /// Show / hide the Settings window.
     ToggleSettings,
+    /// Toggle expression-driven trail color (HSV) vs fixed accent trail.
+    ToggleTrailColor,
 }
 
 impl Action {
     /// Every action, in settings-window display order.
-    pub const ALL: [Action; 18] = [
+    pub const ALL: [Action; 19] = [
         Action::Panic,
         Action::TestNote,
         Action::OctaveUp,
@@ -76,6 +78,7 @@ impl Action {
         Action::LoadMapping,
         Action::SaveMapping,
         Action::ToggleSettings,
+        Action::ToggleTrailColor,
     ];
 
     /// Stable string id used in `settings.toml`. **Never change an existing
@@ -100,6 +103,7 @@ impl Action {
             Action::LoadMapping => "load_mapping",
             Action::SaveMapping => "save_mapping",
             Action::ToggleSettings => "toggle_settings",
+            Action::ToggleTrailColor => "toggle_trail_color",
         }
     }
 
@@ -130,6 +134,7 @@ impl Action {
             Action::LoadMapping => "Load mapping file",
             Action::SaveMapping => "Save mapping file",
             Action::ToggleSettings => "Show/hide settings",
+            Action::ToggleTrailColor => "Toggle expression trail color",
         }
     }
 
@@ -152,7 +157,7 @@ impl Action {
             | Action::RefreshPorts
             | Action::LoadMapping
             | Action::SaveMapping => "MIDI & files",
-            Action::ToggleSettings => "App",
+            Action::ToggleSettings | Action::ToggleTrailColor => "App",
         }
     }
 }
