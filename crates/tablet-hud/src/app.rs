@@ -811,6 +811,59 @@ impl HudApp {
                 }
             });
 
+        egui::CollapsingHeader::new("Vibrato")
+            .default_open(false)
+            .show(ui, |ui| {
+                ui.checkbox(
+                    &mut self.mapping.vibrato.enabled_by_default,
+                    "automatic vibrato (rapid Y wiggle)",
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.mapping.vibrato.default_rate_hz, 0.5..=20.0)
+                        .text("rate (Hz)"),
+                );
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.mapping.vibrato.default_depth_semitones,
+                        0.0..=2.0,
+                    )
+                    .text("depth (st)"),
+                );
+                ui.add(
+                    egui::Slider::new(
+                        &mut self.mapping.vibrato.max_depth_semitones,
+                        0.0..=3.0,
+                    )
+                    .text("max depth (st)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.mapping.vibrato.fade_in_ms, 0.0..=800.0)
+                        .text("fade-in (ms)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.mapping.vibrato.depth_smoothing_ms, 0.0..=500.0)
+                        .text("depth smoothing (ms)"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.mapping.vibrato.gesture_deadzone, 0.0..=0.02)
+                        .text("gesture deadzone"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.mapping.vibrato.y_axis_to_amount, 0.0..=4.0)
+                        .text("Y wiggle sensitivity"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut self.mapping.vibrato.pressure_to_amount, 0.0..=1.0)
+                        .text("pressure → depth"),
+                );
+                if self.mapping.vibrato.default_depth_semitones
+                    > self.mapping.vibrato.max_depth_semitones
+                {
+                    self.mapping.vibrato.default_depth_semitones =
+                        self.mapping.vibrato.max_depth_semitones;
+                }
+            });
+
         egui::CollapsingHeader::new("Velocity")
             .default_open(false)
             .show(ui, |ui| {
@@ -976,6 +1029,7 @@ impl HudApp {
         self.draw_pad_grid(&painter, rect, ui);
         self.draw_trail(&painter, rect);
         self.draw_cursor(&painter, rect);
+        self.draw_vibrato_indicator(&painter, rect);
     }
 
     /// The Push-style pad grid: one rounded square per note, root pads in the
@@ -1148,6 +1202,51 @@ impl HudApp {
         painter.circle_filled(pos, 2.0, color);
     }
 
+    /// Concentric glow rings around the cursor while vibrato is active.
+    fn draw_vibrato_indicator(&self, painter: &egui::Painter, rect: Rect) {
+        let Some(processed) = &self.latest_processed else {
+            return;
+        };
+        if !processed.active {
+            return;
+        }
+        let Some(display) = self.engine.vibrato_display(&self.mapping) else {
+            return;
+        };
+        let pos = surface_pos(processed.x, processed.y, rect);
+        let depth = display.depth_norm as f32;
+        let phase_pulse = (display.phase.sin() * 0.5 + 0.5) as f32;
+        let base_radius = 14.0 + 20.0 * depth;
+        let glow = (140.0 + 115.0 * depth).round() as u8;
+        // Soft filled halo so the ring reads clearly against the pad grid.
+        painter.circle_filled(
+            pos,
+            base_radius + 2.0 + 4.0 * phase_pulse,
+            Color32::from_rgba_unmultiplied(
+                theme::VIBRATO.r(),
+                theme::VIBRATO.g(),
+                theme::VIBRATO.b(),
+                (glow / 4).max(24),
+            ),
+        );
+        for (expand, alpha_scale) in [(0.0_f32, 1.0_f32), (5.0, 0.7_f32), (11.0, 0.4_f32)] {
+            let radius = base_radius + expand + 5.0 * phase_pulse;
+            painter.circle_stroke(
+                pos,
+                radius,
+                Stroke::new(
+                    3.0,
+                    Color32::from_rgba_unmultiplied(
+                        theme::VIBRATO.r(),
+                        theme::VIBRATO.g(),
+                        theme::VIBRATO.b(),
+                        (f32::from(glow) * alpha_scale) as u8,
+                    ),
+                ),
+            );
+        }
+    }
+
     /// The live-expression strip beneath the surface: active-note badge plus
     /// painter-drawn bars for bend, pressure, CC74, and tilt.
     fn draw_meters(&self, ui: &mut egui::Ui) {
@@ -1235,6 +1334,18 @@ impl eframe::App for HudApp {
         ui.ctx().request_repaint();
         self.drain_source();
         self.service_test_note();
+
+        // Frame-driven vibrato LFO (between pen samples).
+        let dt = ui.ctx().input(|i| i.stable_dt) as f64;
+        self.events_scratch.clear();
+        self.engine
+            .tick(dt, &self.mapping, &mut self.events_scratch);
+        for event in &self.events_scratch {
+            self.midi.send(event);
+        }
+        if self.midi.is_connected() {
+            self.events_sent += self.events_scratch.len() as u64;
+        }
 
         // Drop the note-on flash once it has fully faded.
         if self

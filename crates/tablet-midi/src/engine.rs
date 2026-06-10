@@ -26,6 +26,7 @@ use tablet_process::ProcessedSample;
 use crate::event::{MidiEvent, CC_ALL_NOTES_OFF, CC_TIMBRE, PITCH_BEND_CENTER};
 use crate::mapping::{MidiMapping, NoteMode, TiltAxis, VelocitySource};
 use crate::pads::{self, Pad};
+use crate::vibrato::{vibrato_bend_semitones, VibratoDisplay, VibratoState};
 
 /// The note currently sounding, the member channel carrying it, and the pad
 /// state needed for relative expression.
@@ -40,6 +41,8 @@ struct Voice {
     /// neutral pitch and timbre no matter where it was struck.
     x_origin: f64,
     y_origin: f64,
+    /// Per-voice vibrato LFO + gesture envelope (structured for future polyphony).
+    vibrato: VibratoState,
 }
 
 /// Stateful MPE mapper. Construct once per session and thread it through every
@@ -56,6 +59,12 @@ pub struct MpeEngine {
     last_cc74: Option<u8>,
     last_pressure: Option<u8>,
     last_tilt_cc: Option<u8>,
+    /// Manual (non-LFO) pitch bend in semitones for the active voice.
+    manual_bend_semitones: f64,
+    /// Last sample pressure for vibrato tick when no fresh samples arrive.
+    last_sample_pressure: f64,
+    /// Previous capture timestamp for sample-interval dt (gesture envelope).
+    last_capture_ns: Option<u64>,
 }
 
 impl MpeEngine {
@@ -96,6 +105,34 @@ impl MpeEngine {
     /// Last emitted tilt-CC value, if any.
     pub fn last_tilt_cc(&self) -> Option<u8> {
         self.last_tilt_cc
+    }
+
+    /// Vibrato depth/phase for HUD visualization, when a note is held and vibrato
+    /// is active.
+    pub fn vibrato_display(&self, m: &MidiMapping) -> Option<VibratoDisplay> {
+        if !m.vibrato.enabled_by_default {
+            return None;
+        }
+        let voice = self.voice?;
+        let display = voice.vibrato.display(&m.vibrato);
+        if display.depth_norm <= 0.001 {
+            return None;
+        }
+        Some(display)
+    }
+
+    /// Advance the vibrato LFO on frame time `dt` (seconds). Call from the UI
+    /// loop between pen samples so the LFO keeps running while the pen is still.
+    pub fn tick(&mut self, dt: f64, m: &MidiMapping, out: &mut Vec<MidiEvent>) {
+        if !m.vibrato.enabled_by_default || dt <= 0.0 || m.mode == NoteMode::Glide {
+            return;
+        }
+        if let Some(voice) = &mut self.voice {
+            voice
+                .vibrato
+                .tick(dt, self.last_sample_pressure, &m.vibrato);
+            self.emit_bend(m, out);
+        }
     }
 
     /// Process one sample, pushing any resulting events onto `out`.
@@ -152,6 +189,7 @@ impl MpeEngine {
             pad,
             x_origin: s.x,
             y_origin: s.y,
+            vibrato: VibratoState::default(),
         });
         self.reset_expression();
     }
@@ -223,6 +261,7 @@ impl MpeEngine {
             pad,
             x_origin: s.x,
             y_origin: s.y,
+            vibrato: VibratoState::default(),
         });
         self.reset_expression();
     }
@@ -234,14 +273,36 @@ impl MpeEngine {
             return;
         };
 
+        self.last_sample_pressure = s.pressure;
+
         // Pitch bend. In Latch/Pads modes dragging vertically from the strike
         // point bends the held note (up = higher; stream Y grows downward, so
         // the sign flips); a full surface height of travel = `y_bend_semitones`.
         // In Glide the bend tracks the pad under the pen instead, so the pitch
-        // slides continuously across the surface.
+        // slides continuously across the surface. When vibrato is enabled, Y is
+        // split: slow EMA → manual bend, oscillation envelope → vibrato depth.
         let bend_semitones = match m.mode {
             NoteMode::Hold | NoteMode::Discrete => {
-                (voice.y_origin - s.y) * m.y_bend_semitones
+                if m.vibrato.enabled_by_default {
+                    let dt = sample_dt(s, self.last_capture_ns);
+                    self.last_capture_ns = Some(s.raw.t_capture_ns);
+                    if let Some(voice) = &mut self.voice {
+                        voice
+                            .vibrato
+                            .update_gesture(s.y, s.pressure, dt, &m.vibrato);
+                        if voice.vibrato.slow_y_initialized {
+                            voice
+                                .vibrato
+                                .manual_bend_semitones(voice.y_origin, m.y_bend_semitones)
+                        } else {
+                            (voice.y_origin - s.y) * m.y_bend_semitones
+                        }
+                    } else {
+                        (voice.y_origin - s.y) * m.y_bend_semitones
+                    }
+                } else {
+                    (voice.y_origin - s.y) * m.y_bend_semitones
+                }
             }
             NoteMode::Glide => {
                 let pad = pads::pad_at(s.x, s.y, &m.grid);
@@ -249,14 +310,8 @@ impl MpeEngine {
                 f64::from(target) - f64::from(voice.note)
             }
         };
-        let bend = bend_value(bend_semitones, m.mpe.pitch_bend_range_semitones);
-        if self.last_bend != Some(bend) {
-            out.push(MidiEvent::PitchBend {
-                channel: voice.channel,
-                value: bend,
-            });
-            self.last_bend = Some(bend);
-        }
+        self.manual_bend_semitones = bend_semitones;
+        self.emit_bend(m, out);
 
         if m.x_to_cc74 {
             // Horizontal drag from the strike point → CC74 (timbre /
@@ -330,6 +385,42 @@ impl MpeEngine {
         self.last_cc74 = None;
         self.last_pressure = None;
         self.last_tilt_cc = None;
+        self.manual_bend_semitones = 0.0;
+        self.last_sample_pressure = 0.0;
+        self.last_capture_ns = None;
+    }
+
+    /// Combine manual + vibrato bend, convert to 14-bit MIDI, dedupe, emit.
+    fn emit_bend(&mut self, m: &MidiMapping, out: &mut Vec<MidiEvent>) {
+        let Some(voice) = self.voice else {
+            return;
+        };
+        let vibrato_bend = if m.vibrato.enabled_by_default && m.mode != NoteMode::Glide {
+            vibrato_bend_semitones(&voice.vibrato)
+        } else {
+            0.0
+        };
+        let final_semitones = self.manual_bend_semitones + vibrato_bend;
+        let bend = bend_value(final_semitones, m.mpe.pitch_bend_range_semitones);
+        if self.last_bend != Some(bend) {
+            out.push(MidiEvent::PitchBend {
+                channel: voice.channel,
+                value: bend,
+            });
+            self.last_bend = Some(bend);
+        }
+    }
+}
+
+/// Inter-sample interval from capture timestamps (seconds).
+fn sample_dt(s: &ProcessedSample, last_ns: Option<u64>) -> f64 {
+    const DEFAULT: f64 = 1.0 / 120.0;
+    const MAX: f64 = 0.1;
+    match last_ns {
+        Some(prev) if s.raw.t_capture_ns > prev => {
+            ((s.raw.t_capture_ns - prev) as f64 / 1e9).clamp(0.0, MAX)
+        }
+        _ => DEFAULT,
     }
 }
 
@@ -429,6 +520,7 @@ mod tests {
         m.grid.cols = 8;
         m.grid.row_interval_degrees = 12;
         m.mode = NoteMode::Discrete;
+        m.vibrato.enabled_by_default = false;
         m
     }
 
@@ -814,5 +906,95 @@ mod tests {
             127
         );
         assert_eq!(velocity_for(VelocitySource::Fixed(0), 0.5), 1);
+    }
+
+    #[test]
+    fn manual_and_vibrato_bend_sum_then_clamp_at_range() {
+        let mut e = MpeEngine::new();
+        let mut m = mapping();
+        m.vibrato.enabled_by_default = true;
+        m.mpe.pitch_bend_range_semitones = 2.0;
+        m.y_bend_semitones = 0.0;
+        let mut out = Vec::new();
+
+        let (x, y) = pad_center(2, 3);
+        e.process(&sample(x, y, 0.8, true), &m, &mut out);
+        out.clear();
+
+        // Force large manual + vibrato via direct state (bypass gesture detection).
+        e.manual_bend_semitones = 1.8;
+        if let Some(voice) = &mut e.voice {
+            voice.vibrato.depth_current = 0.5;
+            voice.vibrato.phase = std::f64::consts::FRAC_PI_2;
+        }
+        e.emit_bend(&m, &mut out);
+        let bend = out
+            .iter()
+            .find_map(|ev| match ev {
+                MidiEvent::PitchBend { value, .. } => Some(*value),
+                _ => None,
+            })
+            .expect("bend emitted");
+        assert_eq!(bend, 16383, "sum must clamp at +range");
+    }
+
+    #[test]
+    fn vibrato_resets_on_note_off_and_retrigger() {
+        let mut e = MpeEngine::new();
+        let mut m = mapping();
+        m.vibrato.enabled_by_default = true;
+        m.mode = NoteMode::Discrete;
+        let mut out = Vec::new();
+
+        let (x0, y0) = pad_center(0, 0);
+        e.process(&sample(x0, y0, 0.8, true), &m, &mut out);
+        if let Some(voice) = &mut e.voice {
+            voice.vibrato.phase = 2.0;
+            voice.vibrato.depth_current = 0.4;
+        }
+
+        out.clear();
+        e.process(&sample(x0, y0, 0.0, false), &m, &mut out);
+        assert_eq!(e.vibrato_display(&m), None);
+
+        out.clear();
+        e.process(&sample(x0, y0, 0.8, true), &m, &mut out);
+        let v = e.voice.unwrap().vibrato;
+        assert_eq!(v.phase, 0.0);
+        assert_eq!(v.depth_current, 0.0);
+
+        if let Some(voice) = &mut e.voice {
+            voice.vibrato.phase = 1.5;
+            voice.vibrato.depth_current = 0.3;
+        }
+        out.clear();
+        let (x1, y1) = pad_center(0, 2);
+        e.process(&sample(x1, y1, 0.8, true), &m, &mut out);
+        let v = e.voice.unwrap().vibrato;
+        assert_eq!(v.phase, 0.0);
+        assert_eq!(v.depth_current, 0.0);
+    }
+
+    #[test]
+    fn tick_advances_vibrato_lfo_while_held() {
+        let mut e = MpeEngine::new();
+        let mut m = mapping();
+        m.vibrato.enabled_by_default = true;
+        m.mode = NoteMode::Hold;
+        let mut out = Vec::new();
+
+        let (x, y) = pad_center(1, 1);
+        e.process(&sample(x, y, 0.8, true), &m, &mut out);
+        if let Some(voice) = &mut e.voice {
+            voice.vibrato.depth_current = 0.3;
+            voice.vibrato.rate_current = 6.0;
+        }
+        let phase_before = e.voice.unwrap().vibrato.phase;
+
+        out.clear();
+        e.tick(1.0 / 60.0, &m, &mut out);
+        let phase_after = e.voice.unwrap().vibrato.phase;
+        assert!(phase_after > phase_before || phase_after < phase_before);
+        assert!(!out.is_empty(), "tick should emit bend when LFO moves");
     }
 }

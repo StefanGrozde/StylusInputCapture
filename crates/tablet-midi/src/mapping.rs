@@ -10,6 +10,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::scale::ScaleKind;
+use crate::vibrato::VibratoConfig;
 
 /// MPE channel layout and pitch-bend range.
 ///
@@ -214,6 +215,9 @@ pub struct MidiMapping {
     pub pressure_to_channel_pressure: bool,
     /// Optional extra CC driven by pen tilt.
     pub tilt_cc: Option<TiltCc>,
+    /// Automatic per-note vibrato (gesture-driven Y oscillation + sine LFO).
+    #[serde(default)]
+    pub vibrato: VibratoConfig,
 }
 
 fn default_y_bend_semitones() -> f64 {
@@ -244,6 +248,7 @@ impl Default for MidiMapping {
                 axis: TiltAxis::X,
                 range_deg: 60.0,
             }),
+            vibrato: VibratoConfig::default(),
         }
     }
 }
@@ -282,7 +287,7 @@ impl MidiMapping {
             source: e,
         })?;
 
-        let mapping: MidiMapping = if is_json(path) {
+        let mut mapping: MidiMapping = if is_json(path) {
             serde_json::from_str(&text).map_err(|e| MappingError::JsonParse {
                 path: path_str,
                 message: e.to_string(),
@@ -318,8 +323,8 @@ impl MidiMapping {
         })
     }
 
-    /// Validate channel layout, note range, and value ranges.
-    pub fn validate(&self) -> Result<(), MappingError> {
+    /// Validate channel layout, note range, and value ranges; clamp vibrato fields.
+    pub fn validate(&mut self) -> Result<(), MappingError> {
         if self.key > 11 {
             return Err(MappingError::Validation {
                 field: "key",
@@ -398,6 +403,9 @@ impl MidiMapping {
                 });
             }
         }
+        let mut vibrato = self.vibrato;
+        vibrato.clamp();
+        self.vibrato = vibrato;
         Ok(())
     }
 }
