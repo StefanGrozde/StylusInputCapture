@@ -345,13 +345,21 @@ impl HudApp {
     /// mode immediately. Shared by the port and virtual-port buttons.
     fn after_connect(&mut self) {
         self.engine = MpeEngine::new();
-        for event in mpe_init_events(&self.mapping) {
-            self.midi.send(&event);
-        }
+        self.send_mpe_init();
         self.midi_status = self
             .midi
             .port_label()
             .map(|l| (format!("connected: {l}"), false));
+    }
+
+    /// Push the MPE setup messages (zone MCM + per-member bend range) to the
+    /// connected port. Besides connect time, this must run whenever the MPE
+    /// settings change while connected — the receiver otherwise keeps scaling
+    /// bends with the old range until a reconnect.
+    fn send_mpe_init(&mut self) {
+        for event in mpe_init_events(&self.mapping) {
+            self.midi.send(&event);
+        }
     }
 
     fn panic_all_notes_off(&mut self) {
@@ -595,6 +603,7 @@ impl HudApp {
             });
 
         egui::CollapsingHeader::new("MPE").default_open(false).show(ui, |ui| {
+            let before = self.mapping.mpe;
             ui.add(
                 egui::Slider::new(&mut self.mapping.mpe.pitch_bend_range_semitones, 1.0..=48.0)
                     .text("bend range (st)"),
@@ -605,6 +614,12 @@ impl HudApp {
             );
             if self.mapping.mpe.member_low > self.mapping.mpe.member_high {
                 self.mapping.mpe.member_high = self.mapping.mpe.member_low;
+            }
+            // The engine applies edits immediately, but the receiver only
+            // learns the zone/bend range from the RPN setup — re-send it so
+            // live edits don't play out of tune until a reconnect.
+            if self.mapping.mpe != before && self.midi.is_connected() {
+                self.send_mpe_init();
             }
         });
 
@@ -761,6 +776,11 @@ impl HudApp {
                 self.mapping = mapping;
                 self.mapping_path = Some(path);
                 self.mapping_status = Some("loaded".to_owned());
+                // The loaded file may carry a different zone/bend range; the
+                // receiver needs the RPN setup again to match it.
+                if self.midi.is_connected() {
+                    self.send_mpe_init();
+                }
             }
             Err(error) => self.mapping_status = Some(format!("load failed: {error}")),
         }

@@ -40,9 +40,39 @@ impl Default for MpeConfig {
 }
 
 impl MpeConfig {
-    /// Number of member channels (always ≥ 1 for a valid config).
+    /// Number of member channels notes are allocated from (always ≥ 1 for a
+    /// valid config).
     pub fn member_count(&self) -> u8 {
         self.member_high.saturating_sub(self.member_low) + 1
+    }
+
+    /// Member count to advertise in the MPE Configuration Message.
+    ///
+    /// An MPE zone's member channels are by definition the channels
+    /// immediately adjacent to the master, so when `member_low` is raised
+    /// above the default the advertised zone must still start next to the
+    /// master and extend through the farthest member — otherwise notes
+    /// emitted on `member_low..=member_high` would land outside the zone the
+    /// receiver was configured for.
+    pub fn zone_member_count(&self) -> u8 {
+        if self.master_channel < self.member_low {
+            // Lower-zone layout: members sit above the master.
+            self.member_high.saturating_sub(self.master_channel)
+        } else {
+            // Upper-zone layout: members sit below the master.
+            self.master_channel.saturating_sub(self.member_low)
+        }
+    }
+
+    /// Every member channel in the advertised zone (inclusive) — the channels
+    /// counted by [`zone_member_count`](Self::zone_member_count), a superset
+    /// of `member_low..=member_high`.
+    pub fn zone_member_range(&self) -> std::ops::RangeInclusive<u8> {
+        if self.master_channel < self.member_low {
+            self.master_channel + 1..=self.member_high
+        } else {
+            self.member_low..=self.master_channel.saturating_sub(1)
+        }
     }
 }
 
@@ -342,6 +372,15 @@ impl MidiMapping {
                 ),
             });
         }
+        if (m.member_low..=m.member_high).contains(&m.master_channel) {
+            return Err(MappingError::Validation {
+                field: "mpe.master_channel",
+                reason: format!(
+                    "master channel ({}) must be outside the member range ({}..={})",
+                    m.master_channel, m.member_low, m.member_high
+                ),
+            });
+        }
         if m.pitch_bend_range_semitones <= 0.0 {
             return Err(MappingError::Validation {
                 field: "mpe.pitch_bend_range_semitones",
@@ -443,6 +482,43 @@ max = 127
     fn member_count_is_inclusive() {
         let m = MpeConfig::default();
         assert_eq!(m.member_count(), 15); // channels 1..=15
+    }
+
+    #[test]
+    fn zone_spans_from_master_to_farthest_member() {
+        // Default lower zone: members adjacent to the master.
+        let m = MpeConfig::default();
+        assert_eq!(m.zone_member_count(), 15);
+        assert_eq!(m.zone_member_range(), 1..=15);
+
+        // member_low raised above master+1: notes go out on 5..=8, so the
+        // advertised zone must still cover them (1..=8, count 8).
+        let m = MpeConfig {
+            member_low: 5,
+            member_high: 8,
+            ..MpeConfig::default()
+        };
+        assert_eq!(m.zone_member_count(), 8);
+        assert_eq!(m.zone_member_range(), 1..=8);
+
+        // Upper-zone layout: master above the members.
+        let m = MpeConfig {
+            master_channel: 15,
+            member_low: 10,
+            member_high: 14,
+            ..MpeConfig::default()
+        };
+        assert_eq!(m.zone_member_count(), 5);
+        assert_eq!(m.zone_member_range(), 10..=14);
+    }
+
+    #[test]
+    fn rejects_master_inside_member_range() {
+        let mut m = MidiMapping::default();
+        m.mpe.master_channel = 3;
+        m.mpe.member_low = 1;
+        m.mpe.member_high = 15;
+        assert!(m.validate().is_err());
     }
 
     #[test]

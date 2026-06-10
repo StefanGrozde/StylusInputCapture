@@ -21,11 +21,15 @@ pub fn mpe_init_events(m: &MidiMapping) -> Vec<MidiEvent> {
     let mut events = Vec::new();
     let bend_range = m.mpe.pitch_bend_range_semitones.round().clamp(0.0, 96.0) as u8;
 
-    // MCM: configure the lower zone with `member_count` member channels.
-    push_rpn(&mut events, m.mpe.master_channel, 0x00, 0x06, m.mpe.member_count());
+    // MCM: a zone's members are always the channels adjacent to the master,
+    // so advertise enough of them to cover every channel notes go out on —
+    // `member_count()` would leave a raised `member_low..=member_high` range
+    // outside the zone the receiver was configured for.
+    push_rpn(&mut events, m.mpe.master_channel, 0x00, 0x06, m.mpe.zone_member_count());
 
-    // Per-member pitch-bend sensitivity (RPN 0,0 = semitones).
-    for channel in m.mpe.member_low..=m.mpe.member_high {
+    // Per-member pitch-bend sensitivity (RPN 0,0 = semitones), on every
+    // channel in the advertised zone, not just the ones notes are sent on.
+    for channel in m.mpe.zone_member_range() {
         push_rpn(&mut events, channel, 0x00, 0x00, bend_range);
     }
     events
@@ -215,6 +219,36 @@ mod tests {
 
         // Every member channel gets a pitch-bend-range data entry (CC6 = 48).
         for ch in 1..=15u8 {
+            assert!(
+                events.iter().any(|e| matches!(
+                    e,
+                    MidiEvent::ControlChange { channel, controller: 6, value: 48 } if *channel == ch
+                )),
+                "missing bend-range RPN for channel {ch}"
+            );
+        }
+    }
+
+    #[test]
+    fn raised_member_low_still_advertises_a_zone_covering_emitted_channels() {
+        // Members 5..=8 with master 0: notes are emitted on channels 5..=8, so
+        // the MCM must claim 8 members (zone 1..=8), not 4 (zone 1..=4).
+        let mut m = MidiMapping::default();
+        m.mpe.member_low = 5;
+        m.mpe.member_high = 8;
+        let events = mpe_init_events(&m);
+
+        assert!(events.iter().any(|e| matches!(
+            e,
+            MidiEvent::ControlChange {
+                channel: 0,
+                controller: 6,
+                value: 8
+            }
+        )));
+
+        // The whole advertised zone gets the bend-range RPN.
+        for ch in 1..=8u8 {
             assert!(
                 events.iter().any(|e| matches!(
                     e,
