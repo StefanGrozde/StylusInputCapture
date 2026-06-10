@@ -10,8 +10,24 @@
 
 /// Generic Desktop usage page (carries X / Y for the digitizer).
 pub const PAGE_GENERIC_DESKTOP: u16 = 0x01;
+/// Button usage page (generic numbered buttons — tablet pads report
+/// ExpressKeys here on some devices).
+pub const PAGE_BUTTON: u16 = 0x09;
+/// Consumer usage page (media / application-control buttons — the other
+/// common home for tablet ExpressKeys).
+pub const PAGE_CONSUMER: u16 = 0x0C;
 /// Digitizer usage page (pressure, tilt, twist, switches, in-range, …).
 pub const PAGE_DIGITIZER: u16 = 0x0D;
+
+/// First vendor-defined usage page (0xFF00–0xFFFF). Wacom exposes its pad
+/// (ExpressKeys / touch ring) collection on a vendor page (0xFF0D) when the
+/// driver passes raw reports through.
+pub const PAGE_VENDOR_FIRST: u16 = 0xFF00;
+
+/// `true` for any vendor-defined usage page.
+pub fn is_vendor_page(page: u16) -> bool {
+    page >= PAGE_VENDOR_FIRST
+}
 
 // ---------------------------------------------------------------------------
 // Generic Desktop usages (page 0x01)
@@ -30,6 +46,13 @@ pub const USAGE_Y: u16 = 0x31;
 pub const TLC_DIGITIZER: u16 = 0x01;
 /// Top-level Pen collection usage.
 pub const TLC_PEN: u16 = 0x02;
+
+// ---------------------------------------------------------------------------
+// Consumer usages (page 0x0C)
+// ---------------------------------------------------------------------------
+
+/// Top-level Consumer Control collection usage.
+pub const USAGE_CONSUMER_CONTROL: u16 = 0x01;
 
 // ---------------------------------------------------------------------------
 // Digitizer usages (page 0x0D)

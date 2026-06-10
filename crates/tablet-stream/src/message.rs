@@ -7,6 +7,7 @@ pub const KIND_SAMPLE: u8 = 0x02;
 pub const KIND_PROXIMITY: u8 = 0x03;
 pub const KIND_METRICS: u8 = 0x04;
 pub const KIND_HEARTBEAT: u8 = 0x05;
+pub const KIND_TABLET_BUTTON: u8 = 0x06;
 
 /// Wire format selector.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -53,4 +54,13 @@ pub enum StreamMessage {
     Metrics(Metrics),
     /// Keepalive / no-op; sent periodically when no samples arrive.
     Heartbeat,
+    /// A physical tablet button (ExpressKey) changed state. `index` is the
+    /// backend-assigned stable per-device ordinal (see
+    /// `tablet_core::SampleEvent::TabletButton`).
+    TabletButton {
+        /// Stable per-device button ordinal.
+        index: u8,
+        /// `true` on press, `false` on release.
+        pressed: bool,
+    },
 }

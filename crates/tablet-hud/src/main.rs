@@ -1,7 +1,11 @@
+mod actions;
 mod app;
+mod bindings;
 mod cli;
 mod midi_out;
 mod prefs;
+mod settings;
+mod settings_ui;
 mod theme;
 
 use eframe::egui;
@@ -9,6 +13,7 @@ use eframe::egui;
 use app::HudApp;
 use cli::Args;
 use prefs::HudPrefs;
+use settings::HudSettings;
 
 fn main() -> eframe::Result<()> {
     let args = match Args::parse_env() {
@@ -20,6 +25,7 @@ fn main() -> eframe::Result<()> {
     };
 
     let prefs = HudPrefs::load();
+    let settings = HudSettings::load();
     let (width, height) = prefs.window_size.unwrap_or((1280.0, 800.0));
 
     let viewport = egui::ViewportBuilder::default()
@@ -37,7 +43,7 @@ fn main() -> eframe::Result<()> {
         options,
         Box::new(move |cc| {
             theme::apply(&cc.egui_ctx);
-            Ok(Box::new(HudApp::new(args, prefs)))
+            Ok(Box::new(HudApp::new(args, prefs, settings)))
         }),
     )
 }

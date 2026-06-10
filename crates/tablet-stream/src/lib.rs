@@ -13,7 +13,7 @@ pub use error::StreamError;
 pub use framing::{FrameReader, FrameWriter, MAGIC, PROTOCOL_VERSION};
 pub use message::{
     Format, Metrics, StreamMessage, KIND_CAPABILITIES, KIND_HEARTBEAT, KIND_METRICS,
-    KIND_PROXIMITY, KIND_SAMPLE,
+    KIND_PROXIMITY, KIND_SAMPLE, KIND_TABLET_BUTTON,
 };
 pub use mock::{MockBackend, MockConfig};
 pub use transport::{Transport, TransportWriter};

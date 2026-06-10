@@ -76,6 +76,21 @@ Properties (SPEC_BGC §9). This is a manual checklist; record results inline.
 
 > Result:
 
+## 6. Tablet ExpressKeys & stylus-button bindings
+
+- [ ] In the HUD's **⚙ Settings** window, bind `pen:barrel` to an action
+      (Bind… → press the stylus side button). Confirm the action fires —
+      **including while another app (DAW) owns the foreground**.
+- [ ] Bind…, then press a tablet **ExpressKey**. If raw pad reports reach Raw
+      Input, the chord captures as `tablet:<n>` and fires globally.
+- [ ] If the ExpressKey does **not** capture natively (the Wacom driver
+      consumes pad reports), map the key to a keystroke in Wacom Tablet
+      Properties and bind that keystroke instead — works while the HUD is
+      focused. Note which path this hardware/driver combination uses.
+- [ ] Restart the HUD: bindings persist (`settings.toml` in the config dir).
+
+> Result:
+
 ---
 
 ## Acceptance summary

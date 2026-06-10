@@ -23,6 +23,7 @@
 pub mod caps;
 pub mod decode;
 pub mod hid;
+pub mod pad;
 
 #[cfg(windows)]
 pub mod backend;
@@ -35,7 +36,7 @@ pub mod register;
 #[cfg(windows)]
 pub mod window;
 
-pub use caps::{capabilities_from_profile, AxisRange, ProfileCaps};
+pub use caps::{capabilities_from_profile, AxisRange, ProfileCaps, ProfileKind};
 pub use decode::{decode_report, UsageReader};
 
 #[cfg(windows)]

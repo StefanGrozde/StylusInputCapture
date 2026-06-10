@@ -31,6 +31,9 @@ pub struct MockConfig {
     /// If `Some(n)`, increment the serial by 2 every `n`th sample to simulate
     /// a packet-drop / serial discontinuity.
     pub gap_every: Option<u32>,
+    /// If `Some(n)`, emit a `TabletButton` press/release pair (index 0) around
+    /// every `n`th sample, to exercise the ExpressKey path without hardware.
+    pub tablet_button_every: Option<u32>,
 }
 
 impl Default for MockConfig {
@@ -39,6 +42,7 @@ impl Default for MockConfig {
             sample_count: 100,
             rate_hz: 200,
             gap_every: None,
+            tablet_button_every: None,
         }
     }
 }
@@ -214,6 +218,21 @@ impl TabletBackend for MockBackend {
 
                 sink(SampleEvent::Sample(sample));
 
+                let button = config
+                    .tablet_button_every
+                    .map(|n| n > 0 && idx > 0 && idx.is_multiple_of(n))
+                    .unwrap_or(false);
+                if button {
+                    sink(SampleEvent::TabletButton {
+                        index: 0,
+                        pressed: true,
+                    });
+                    sink(SampleEvent::TabletButton {
+                        index: 0,
+                        pressed: false,
+                    });
+                }
+
                 idx += 1;
                 thread::sleep(Duration::from_micros(sleep_us));
             }
@@ -248,6 +267,7 @@ mod tests {
             sample_count: 10,
             rate_hz: 10_000, // fast for tests
             gap_every: None,
+            tablet_button_every: None,
         };
         let mut backend = MockBackend::new(config);
 
@@ -310,6 +330,7 @@ mod tests {
             sample_count: 10,
             rate_hz: 10_000,
             gap_every: Some(3), // inject a gap every 3rd sample (idx 3, 6, 9)
+            tablet_button_every: None,
         };
         let mut backend = MockBackend::new(config);
 
@@ -343,6 +364,39 @@ mod tests {
             has_gap,
             "gap injection must produce at least one serial discontinuity; serials: {serials:?}"
         );
+    }
+
+    #[test]
+    fn mock_emits_tablet_button_pairs_when_configured() {
+        let config = MockConfig {
+            sample_count: 10,
+            rate_hz: 10_000,
+            gap_every: None,
+            tablet_button_every: Some(4), // press/release after idx 4 and 8
+        };
+        let mut backend = MockBackend::new(config);
+
+        let events: Arc<Mutex<Vec<SampleEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+        backend
+            .start(Box::new(move |ev| {
+                events_clone.lock().unwrap().push(ev);
+            }))
+            .unwrap();
+        backend.stop().unwrap();
+
+        let collected = events.lock().unwrap();
+        let buttons: Vec<(u8, bool)> = collected
+            .iter()
+            .filter_map(|ev| {
+                if let SampleEvent::TabletButton { index, pressed } = ev {
+                    Some((*index, *pressed))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(buttons, vec![(0, true), (0, false), (0, true), (0, false)]);
     }
 
     #[test]

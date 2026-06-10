@@ -15,6 +15,7 @@ fn mock_serial_gaps_are_reported_in_metrics_frame() {
         sample_count: SAMPLE_COUNT,
         rate_hz: 1_000_000,
         gap_every: Some(GAP_EVERY),
+        tablet_button_every: None,
     });
 
     let events = Arc::new(Mutex::new(Vec::new()));
@@ -93,5 +94,8 @@ fn stream_message_from_event(event: SampleEvent) -> StreamMessage {
             in_range,
             tool_serial,
         },
+        SampleEvent::TabletButton { index, pressed } => {
+            StreamMessage::TabletButton { index, pressed }
+        }
     }
 }

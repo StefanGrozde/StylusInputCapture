@@ -395,7 +395,9 @@ pub fn handle_message(
                 .latest_metrics = Some(metrics.clone());
         }
         StreamMessage::Sample(sample) => record_serial_gap(*sample, ingest_state, shared),
-        StreamMessage::Proximity { .. } | StreamMessage::Heartbeat => {}
+        StreamMessage::Proximity { .. }
+        | StreamMessage::Heartbeat
+        | StreamMessage::TabletButton { .. } => {}
     }
 
     push_message(shared, message);

@@ -9,7 +9,7 @@
 //! All `unsafe` FFI is isolated here behind safe wrappers; nothing `unsafe` leaks
 //! into a public signature.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use tracing::{debug, warn};
 use windows_sys::Win32::Devices::HumanInterfaceDevice::{
@@ -22,7 +22,7 @@ use windows_sys::Win32::UI::Input::{
     RIDI_DEVICENAME, RIDI_PREPARSEDDATA, RID_DEVICE_INFO, RIM_TYPEHID,
 };
 
-use crate::caps::{AxisRange, ProfileCaps};
+use crate::caps::{AxisRange, ProfileCaps, ProfileKind};
 use crate::hid::*;
 
 /// `HidP_*` success status (`HIDP_STATUS_SUCCESS`).
@@ -91,6 +91,7 @@ pub fn build_profile(handle: HANDLE) -> Option<DeviceProfile> {
 
     let mut caps = parse_caps(&preparsed)?;
     caps.device_name = name;
+    caps.vendor_id = hid.dwVendorId as u16;
     caps.driver_version = format!(
         "hid vid:{:04x} pid:{:04x} ver:{}",
         hid.dwVendorId, hid.dwProductId, hid.dwVersionNumber
@@ -101,6 +102,89 @@ pub fn build_profile(handle: HANDLE) -> Option<DeviceProfile> {
         preparsed,
         caps,
     })
+}
+
+/// Build a **pad** [`DeviceProfile`] (tablet ExpressKeys) for a device handle.
+///
+/// Accepts only devices whose top-level collection is Consumer Control or a
+/// vendor-defined page **and** whose USB vendor id matches one of the
+/// enumerated digitizers (`digitizer_vids`) — this is what keeps unrelated
+/// consumer devices (volume knobs, media keys) out of the capture set.
+/// Returns `None` when the device declares no input buttons at all.
+pub fn build_pad_profile(handle: HANDLE, digitizer_vids: &HashSet<u16>) -> Option<DeviceProfile> {
+    // SAFETY: `handle` came from GetRawInputDeviceList / a device-change message.
+    let info = unsafe { device_info(handle)? };
+    // RID_DEVICE_INFO union: the HID arm is valid because dwType == RIM_TYPEHID.
+    let hid = unsafe { info.Anonymous.hid };
+    let is_pad_tlc = (hid.usUsagePage == PAGE_CONSUMER && hid.usUsage == USAGE_CONSUMER_CONTROL)
+        || is_vendor_page(hid.usUsagePage);
+    if !is_pad_tlc {
+        return None;
+    }
+    let vid = hid.dwVendorId as u16;
+    if !digitizer_vids.contains(&vid) {
+        return None;
+    }
+
+    let name = unsafe { device_name(handle) }.unwrap_or_else(|| "HID tablet pad".to_string());
+    let preparsed = unsafe { preparsed_data(handle)? };
+
+    let pad_buttons = parse_pad_buttons(&preparsed)?;
+    if pad_buttons.is_empty() {
+        return None;
+    }
+
+    let caps = ProfileCaps {
+        kind: ProfileKind::Pad,
+        pad_buttons,
+        device_name: name,
+        vendor_id: vid,
+        driver_version: format!(
+            "hid vid:{:04x} pid:{:04x} ver:{}",
+            hid.dwVendorId, hid.dwProductId, hid.dwVersionNumber
+        ),
+        ..ProfileCaps::default()
+    };
+
+    Some(DeviceProfile {
+        handle,
+        preparsed,
+        caps,
+    })
+}
+
+/// Second enumeration pass: add a pad profile for every HID device that looks
+/// like the tablet's ExpressKeys collection (see [`build_pad_profile`]).
+/// `map` must already hold the enumerated pen/digitizer profiles — their
+/// vendor ids are what pads are matched against.
+pub fn add_pad_profiles(map: &mut ProfileMap) {
+    let vids = digitizer_vendor_ids(map);
+    if vids.is_empty() {
+        return;
+    }
+    // SAFETY: standard two-call GetRawInputDeviceList pattern; sizes are checked.
+    for entry in unsafe { raw_input_device_list() } {
+        if entry.dwType != RIM_TYPEHID || map.contains_key(&entry.hDevice) {
+            continue;
+        }
+        if let Some(profile) = build_pad_profile(entry.hDevice, &vids) {
+            debug!(
+                name = %profile.caps.device_name,
+                buttons = profile.caps.pad_buttons.len(),
+                "tablet pad profile built"
+            );
+            map.insert(entry.hDevice, profile);
+        }
+    }
+}
+
+/// Vendor ids of all pen/digitizer profiles in `map`.
+pub fn digitizer_vendor_ids(map: &ProfileMap) -> HashSet<u16> {
+    map.values()
+        .filter(|p| p.caps.kind == ProfileKind::Pen)
+        .map(|p| p.caps.vendor_id)
+        .filter(|&vid| vid != 0)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +242,59 @@ fn parse_caps(preparsed: &[u8]) -> Option<ProfileCaps> {
     }
 
     Some(caps)
+}
+
+/// Maximum pad buttons retained per device; `TabletButton.index` is a `u8` and
+/// real pads have at most a couple dozen keys.
+const MAX_PAD_BUTTONS: usize = 64;
+
+/// Parse a pad device's preparsed data into its sorted `(page, usage)` input
+/// button list. Usage ranges are expanded so every button gets its own entry.
+fn parse_pad_buttons(preparsed: &[u8]) -> Option<Vec<(u16, u16)>> {
+    let pp = preparsed.as_ptr() as isize;
+
+    let mut hidp_caps: HIDP_CAPS = unsafe { std::mem::zeroed() };
+    // SAFETY: `pp` points at a valid preparsed-data buffer we own.
+    if unsafe { HidP_GetCaps(pp, &mut hidp_caps) } != HIDP_STATUS_SUCCESS {
+        warn!("HidP_GetCaps failed for pad device");
+        return None;
+    }
+
+    let n_buttons = hidp_caps.NumberInputButtonCaps as usize;
+    let mut buttons: Vec<(u16, u16)> = Vec::new();
+    if n_buttons > 0 {
+        let mut button_caps: Vec<HIDP_BUTTON_CAPS> = vec![unsafe { std::mem::zeroed() }; n_buttons];
+        let mut len = n_buttons as u16;
+        // SAFETY: buffer holds `n_buttons` entries; `len` is in/out.
+        let status = unsafe {
+            HidP_GetButtonCaps(HidP_Input, button_caps.as_mut_ptr(), &mut len, pp)
+        };
+        if status != HIDP_STATUS_SUCCESS {
+            warn!("HidP_GetButtonCaps failed for pad device");
+            return None;
+        }
+        for bc in button_caps.iter().take(len as usize) {
+            let (lo, hi) = if bc.IsRange != 0 {
+                unsafe { (bc.Anonymous.Range.UsageMin, bc.Anonymous.Range.UsageMax) }
+            } else {
+                let u = unsafe { bc.Anonymous.NotRange.Usage };
+                (u, u)
+            };
+            for usage in lo..=hi {
+                buttons.push((bc.UsagePage, usage));
+                if buttons.len() >= MAX_PAD_BUTTONS {
+                    break;
+                }
+            }
+            if buttons.len() >= MAX_PAD_BUTTONS {
+                break;
+            }
+        }
+    }
+
+    buttons.sort_unstable();
+    buttons.dedup();
+    Some(buttons)
 }
 
 /// Fold one value cap into [`ProfileCaps`].

@@ -127,6 +127,9 @@ fn consume<R: Read>(reader: R, format: Format) -> Result<(), StreamError> {
             }
             StreamMessage::Metrics(metrics) => print_metrics(&metrics),
             StreamMessage::Heartbeat => println!("heartbeat"),
+            StreamMessage::TabletButton { index, pressed } => {
+                println!("tablet_button,index={index},pressed={pressed}");
+            }
         }
     }
 }

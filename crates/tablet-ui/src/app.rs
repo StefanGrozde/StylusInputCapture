@@ -236,7 +236,7 @@ impl TabletUiApp {
                     in_range,
                     tool_serial,
                 } => self.push_event(proximity_event(in_range, tool_serial)),
-                StreamMessage::Heartbeat => {}
+                StreamMessage::Heartbeat | StreamMessage::TabletButton { .. } => {}
             }
         }
 

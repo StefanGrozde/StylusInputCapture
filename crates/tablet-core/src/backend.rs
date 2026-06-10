@@ -20,6 +20,17 @@ pub enum SampleEvent {
         /// Physical pen serial number associated with the event.
         tool_serial: u64,
     },
+
+    /// A physical tablet button (ExpressKey) changed state.
+    ///
+    /// `index` is a stable per-device ordinal assigned by the backend (position
+    /// in the device's sorted button-usage list), not a HID usage number.
+    TabletButton {
+        /// Stable per-device button ordinal.
+        index: u8,
+        /// `true` on press, `false` on release.
+        pressed: bool,
+    },
 }
 
 /// The single abstraction every platform backend implements.
