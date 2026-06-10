@@ -4,7 +4,7 @@ use crate::codec::{decode_payload, encode_payload};
 use crate::error::StreamError;
 use crate::message::{
     Format, StreamMessage, KIND_CAPABILITIES, KIND_HEARTBEAT, KIND_METRICS, KIND_PROXIMITY,
-    KIND_SAMPLE,
+    KIND_SAMPLE, KIND_TABLET_BUTTON,
 };
 
 // ---------------------------------------------------------------------------
@@ -106,6 +106,7 @@ fn kind_str(msg: &StreamMessage) -> &'static str {
         StreamMessage::Proximity { .. } => "proximity",
         StreamMessage::Metrics(_) => "metrics",
         StreamMessage::Heartbeat => "heartbeat",
+        StreamMessage::TabletButton { .. } => "tablet_button",
     }
 }
 
@@ -274,6 +275,7 @@ fn decode_jsonl(line: &str) -> Result<StreamMessage, StreamError> {
         "proximity" => KIND_PROXIMITY,
         "metrics" => KIND_METRICS,
         "heartbeat" => KIND_HEARTBEAT,
+        "tablet_button" => KIND_TABLET_BUTTON,
         other => return Err(StreamError::Decode(format!("unknown kind string: {other}"))),
     };
 

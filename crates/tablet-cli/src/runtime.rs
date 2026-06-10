@@ -109,6 +109,7 @@ fn build_backend(config: &Config) -> Box<dyn TabletBackend> {
         sample_count: 100,
         rate_hz: config.capture.requested_rate_hz,
         gap_every: None,
+        tablet_button_every: None,
     }))
 }
 
@@ -275,6 +276,9 @@ fn stream_message_from_event(event: SampleEvent) -> StreamMessage {
             in_range,
             tool_serial,
         },
+        SampleEvent::TabletButton { index, pressed } => {
+            StreamMessage::TabletButton { index, pressed }
+        }
     }
 }
 

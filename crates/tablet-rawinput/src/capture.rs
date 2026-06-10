@@ -9,7 +9,7 @@
 //! reading per drain burst and a synthesized monotonic serial, and pushed to the
 //! sink. Proximity transitions and device hot-plug are handled here too (§8).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
@@ -26,10 +26,11 @@ use windows_sys::Win32::UI::Input::{
     GetRawInputBuffer, GetRawInputData, RAWINPUT, RAWINPUTHEADER, RID_INPUT, RIM_TYPEHID,
 };
 
-use crate::caps::{capabilities_from_profile, AxisRange, ProfileCaps};
+use crate::caps::{capabilities_from_profile, AxisRange, ProfileCaps, ProfileKind};
 use crate::decode::{decode_report, UsageReader};
-use crate::enumerate::{build_profile, ProfileMap};
+use crate::enumerate::{build_pad_profile, build_profile, digitizer_vendor_ids, ProfileMap};
 use crate::hid::*;
+use crate::pad::button_edges;
 
 /// `HidP_*` success status.
 const HIDP_STATUS_SUCCESS: i32 = 0x0011_0000;
@@ -62,6 +63,12 @@ pub struct CaptureState {
     pub drop_count: Arc<AtomicU64>,
     /// Last observed in-range state per device, for proximity transitions.
     pub prox: HashMap<isize, bool>,
+    /// Currently pressed `(page, usage)` set per **pad** device, for
+    /// `TabletButton` edge detection.
+    pub pad_pressed: HashMap<isize, Vec<(u16, u16)>>,
+    /// Vendor ids of the enumerated digitizers, for lazily building pad
+    /// profiles on hot-plug / late-reporting devices.
+    pub digitizer_vids: HashSet<u16>,
     /// Pre-sized drain buffer (no allocation on the hot path).
     pub buf: Vec<u8>,
     /// QPC ns of the first decoded report (rate measurement, §7/B6).
@@ -86,6 +93,7 @@ impl CaptureState {
         sink: Box<dyn FnMut(SampleEvent) + Send>,
         drop_count: Arc<AtomicU64>,
     ) -> Self {
+        let digitizer_vids = digitizer_vendor_ids(&profiles);
         Self {
             profiles,
             sink,
@@ -93,6 +101,8 @@ impl CaptureState {
             qpc_freq: qpc_frequency(),
             drop_count,
             prox: HashMap::new(),
+            pad_pressed: HashMap::new(),
+            digitizer_vids,
             buf: vec![0u8; DRAIN_BUF_BYTES],
             first_ns: 0,
             count_since_first: 0,
@@ -254,9 +264,10 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
     // If we have no profile for this handle, the device delivering reports wasn't
     // in the enumerated set (e.g. it appeared without a device-change message, or
     // its top-level usage differed at enumeration). Try to build one lazily before
-    // giving up, so we don't silently drop a live pen.
+    // giving up, so we don't silently drop a live pen (or its pad collection).
     if !state.profiles.contains_key(&key) {
-        match build_profile(key) {
+        let lazy = build_profile(key).or_else(|| build_pad_profile(key, &state.digitizer_vids));
+        match lazy {
             Some(profile) => {
                 debug!(key, name = %profile.caps.device_name, "diag: lazily built profile for reporting device");
                 state.profiles.insert(key, profile);
@@ -291,6 +302,16 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
     }
     let base = std::ptr::addr_of!((*raw).data.hid.bRawData) as *const u8;
 
+    // Pad collections only carry ExpressKey state — diff each report into
+    // TabletButton edges and skip the pen decode path entirely.
+    if caps.kind == ProfileKind::Pad {
+        for i in 0..count {
+            let report = base.add(i * size_hid);
+            process_pad_report(state, key, preparsed, caps, report, size_hid as u32);
+        }
+        return;
+    }
+
     for i in 0..count {
         let report = base.add(i * size_hid);
         let reader = HidReader {
@@ -318,6 +339,60 @@ unsafe fn process_raw_block(state: &mut CaptureState, raw: *const RAWINPUT, now_
         (state.sink)(SampleEvent::Sample(sample));
 
         measure_rate(state, key, now_ns);
+    }
+}
+
+/// Decode one **pad** HID report: read the currently pressed button usages,
+/// diff against the device's previous set, and emit a `TabletButton` event per
+/// edge. Pad reports arrive at button-press rate, not pen rate, so the small
+/// per-report allocation here is not a hot-path concern.
+fn process_pad_report(
+    state: &mut CaptureState,
+    key: isize,
+    preparsed: isize,
+    caps: &ProfileCaps,
+    report: *const u8,
+    report_len: u32,
+) {
+    // Collect pressed usages across every page the pad's button list declares.
+    let mut pressed: Vec<(u16, u16)> = Vec::new();
+    let mut pages: Vec<u16> = caps.pad_buttons.iter().map(|&(page, _)| page).collect();
+    pages.dedup(); // pad_buttons is sorted, so equal pages are adjacent
+
+    for page in pages {
+        let mut list = [0u16; 64];
+        let mut len: u32 = list.len() as u32;
+        // SAFETY: `list`/`len` describe a valid in/out buffer; report is valid for
+        // `report_len` bytes; HidP does not write through `report`.
+        let status = unsafe {
+            HidP_GetUsages(
+                HidP_Input,
+                page,
+                0,
+                list.as_mut_ptr(),
+                &mut len,
+                preparsed,
+                report as *mut u8,
+                report_len,
+            )
+        };
+        if status != HIDP_STATUS_SUCCESS {
+            continue; // e.g. a report id that carries no buttons on this page
+        }
+        pressed.extend(list[..len as usize].iter().map(|&usage| (page, usage)));
+    }
+    pressed.sort_unstable();
+
+    let prev = state.pad_pressed.entry(key).or_default();
+    let edges = button_edges(&caps.pad_buttons, prev, &pressed);
+    *prev = pressed;
+
+    for (index, is_pressed) in edges {
+        debug!(index, pressed = is_pressed, "tablet pad button edge");
+        (state.sink)(SampleEvent::TabletButton {
+            index,
+            pressed: is_pressed,
+        });
     }
 }
 
@@ -373,9 +448,16 @@ pub fn handle_device_change(state: &mut CaptureState, gidc: usize, hdevice: HAND
         GIDC_ARRIVAL => {
             if let Some(profile) = build_profile(hdevice) {
                 let caps = capabilities_from_profile(&profile.caps, BATCH_REPORTS);
+                if profile.caps.vendor_id != 0 {
+                    state.digitizer_vids.insert(profile.caps.vendor_id);
+                }
                 state.profiles.insert(key, profile);
                 debug!("device arrival: re-emitting capabilities");
                 (state.sink)(SampleEvent::Capabilities(caps));
+            } else if let Some(profile) = build_pad_profile(hdevice, &state.digitizer_vids) {
+                // Pads carry no axes, so no Capabilities re-emit.
+                debug!(name = %profile.caps.device_name, "pad device arrival");
+                state.profiles.insert(key, profile);
             }
         }
         GIDC_REMOVAL => {
@@ -387,6 +469,7 @@ pub fn handle_device_change(state: &mut CaptureState, gidc: usize, hdevice: HAND
             }
             state.profiles.remove(&key);
             state.prox.remove(&key);
+            state.pad_pressed.remove(&key);
             debug!("device removal: cache entry dropped");
         }
         _ => {}

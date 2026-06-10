@@ -380,6 +380,7 @@ fn test_d_mock_backend_end_to_end() {
         sample_count: 10,
         rate_hz: 50_000, // Very fast for tests — ~20µs per sample
         gap_every: None,
+        tablet_button_every: None,
     };
     let mut backend = MockBackend::new(config);
 
@@ -415,6 +416,10 @@ fn test_d_mock_backend_end_to_end() {
                 in_range: *in_range,
                 tool_serial: *tool_serial,
             },
+            SampleEvent::TabletButton { index, pressed } => StreamMessage::TabletButton {
+                index: *index,
+                pressed: *pressed,
+            },
         };
         writer.write_message(&msg).unwrap();
     }
@@ -445,4 +450,66 @@ fn test_d_mock_backend_end_to_end() {
     }
 
     assert_eq!(sample_count, 10, "must decode exactly 10 samples");
+}
+
+/// Tablet ExpressKey events synthesized by the mock must survive the full
+/// backend → FrameWriter → FrameReader path with index and edge intact.
+#[test]
+fn test_d2_mock_tablet_buttons_end_to_end() {
+    use tablet_core::TabletBackend;
+
+    let config = MockConfig {
+        sample_count: 10,
+        rate_hz: 50_000,
+        gap_every: None,
+        tablet_button_every: Some(5), // press/release after samples 5 (and only 5)
+    };
+    let mut backend = MockBackend::new(config);
+
+    let events: Arc<Mutex<Vec<SampleEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let events_clone = Arc::clone(&events);
+    backend
+        .start(Box::new(move |ev| {
+            events_clone.lock().unwrap().push(ev);
+        }))
+        .unwrap();
+    backend.stop().unwrap();
+
+    let collected = events.lock().unwrap();
+
+    let mut buf = Vec::<u8>::new();
+    let mut writer = FrameWriter::new(&mut buf, Format::Postcard);
+    writer.write_header().unwrap();
+    for ev in collected.iter() {
+        let msg = match ev {
+            SampleEvent::Capabilities(c) => StreamMessage::Capabilities(c.clone()),
+            SampleEvent::Sample(s) => StreamMessage::Sample(*s),
+            SampleEvent::Proximity {
+                in_range,
+                tool_serial,
+            } => StreamMessage::Proximity {
+                in_range: *in_range,
+                tool_serial: *tool_serial,
+            },
+            SampleEvent::TabletButton { index, pressed } => StreamMessage::TabletButton {
+                index: *index,
+                pressed: *pressed,
+            },
+        };
+        writer.write_message(&msg).unwrap();
+    }
+    drop(writer);
+
+    let mut reader = FrameReader::new_from_header(Cursor::new(buf)).unwrap();
+    let mut buttons = Vec::new();
+    for _ in 0..collected.len() {
+        if let StreamMessage::TabletButton { index, pressed } = reader.read_message().unwrap() {
+            buttons.push((index, pressed));
+        }
+    }
+    assert_eq!(
+        buttons,
+        vec![(0, true), (0, false)],
+        "the press/release pair must decode in order"
+    );
 }

@@ -28,8 +28,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 
 use crate::capture::{CaptureState, BATCH_REPORTS};
-use crate::caps::capabilities_from_profile;
-use crate::enumerate::enumerate_digitizers;
+use crate::caps::{capabilities_from_profile, ProfileKind};
+use crate::enumerate::{add_pad_profiles, enumerate_digitizers};
 use crate::register::{register, unregister};
 use crate::window::{create_message_window, destroy_message_window, WM_USER_STOP};
 
@@ -143,8 +143,8 @@ fn capture_thread_main(
         }
     };
 
-    // 2. Enumerate HID digitizers.
-    let profiles = enumerate_digitizers();
+    // 2. Enumerate HID digitizers, then the matching tablet-pad collections.
+    let mut profiles = enumerate_digitizers();
     if profiles.is_empty() {
         warn!("no HID digitizer found (is 'Use Windows Ink' enabled?)");
         // SAFETY: hwnd just created on this thread.
@@ -152,6 +152,7 @@ fn capture_thread_main(
         let _ = ready_tx.send(Err(BackendError::NoDevice));
         return;
     }
+    add_pad_profiles(&mut profiles);
     debug!(count = profiles.len(), "diag: enumerated HID digitizer profiles");
     for (handle, profile) in &profiles {
         let c = &profile.caps;
@@ -177,9 +178,14 @@ fn capture_thread_main(
         return;
     }
 
-    // 4. Build capture state and emit the initial Capabilities handshake.
+    // 4. Build capture state and emit the initial Capabilities handshake
+    //    (always from a pen profile — pad profiles carry no axes).
     let mut state = Box::new(CaptureState::new(profiles, sink, drop_count));
-    if let Some(profile) = state.profiles.values().next() {
+    if let Some(profile) = state
+        .profiles
+        .values()
+        .find(|p| p.caps.kind == ProfileKind::Pen)
+    {
         let caps = capabilities_from_profile(&profile.caps, BATCH_REPORTS);
         (state.sink)(SampleEvent::Capabilities(caps));
     }

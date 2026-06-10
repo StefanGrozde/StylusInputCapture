@@ -29,9 +29,12 @@ use tablet_midi::{
 use tablet_process::{CalibrationProfile, ProcessedSample, ProcessorState};
 use tablet_stream::{Format, StreamMessage};
 
+use crate::actions::Action;
+use crate::bindings::{InputChord, PenButton};
 use crate::cli::{format_label, source_label, Args};
 use crate::midi_out::{mpe_init_events, MidiOut};
 use crate::prefs::HudPrefs;
+use crate::settings::HudSettings;
 use crate::theme;
 
 /// Windows default MIDI synth — present on most systems but ignores MPE.
@@ -103,10 +106,22 @@ pub struct HudApp {
     prefs: HudPrefs,
     /// Window inner size captured each frame so `on_exit` can persist it.
     last_window_size: Option<(f32, f32)>,
+
+    /// Persisted app settings (the keybinding map lives here).
+    pub(crate) settings: HudSettings,
+    /// Whether the Settings window is shown.
+    pub(crate) settings_open: bool,
+    /// Action awaiting a new binding ("listen mode"): the next input chord is
+    /// captured as its binding instead of being dispatched.
+    pub(crate) listening: Option<Action>,
+    /// Last bind/unbind outcome, shown in the settings window.
+    pub(crate) settings_status: Option<String>,
+    /// Previous `PenSample.buttons` word, for stylus-button edge detection.
+    last_pen_buttons: u32,
 }
 
 impl HudApp {
-    pub fn new(args: Args, prefs: HudPrefs) -> Self {
+    pub fn new(args: Args, prefs: HudPrefs, settings: HudSettings) -> Self {
         let source_handle = if args.spawn {
             match spawn_producer(&SpawnOptions::default())
                 .and_then(SourceHandle::spawn_child_producer)
@@ -201,6 +216,11 @@ impl HudApp {
             history: VecDeque::with_capacity(HISTORY_CAPACITY),
             prefs,
             last_window_size: None,
+            settings,
+            settings_open: false,
+            listening: None,
+            settings_status: None,
+            last_pen_buttons: 0,
         };
 
         if let Some(substring) = args.midi_port.as_deref() {
@@ -250,6 +270,9 @@ impl HudApp {
             match message {
                 StreamMessage::Capabilities(caps) => self.latest_capabilities = Some(caps),
                 StreamMessage::Sample(sample) => self.handle_sample(sample),
+                StreamMessage::TabletButton { index, pressed } => {
+                    self.handle_tablet_button(index, pressed)
+                }
                 StreamMessage::Proximity { .. }
                 | StreamMessage::Metrics(_)
                 | StreamMessage::Heartbeat => {}
@@ -261,6 +284,18 @@ impl HudApp {
 
     fn handle_sample(&mut self, sample: PenSample) {
         self.latest_sample = Some(sample);
+
+        // Stylus button (barrel / eraser) press edges feed the keymap. The pen
+        // stream is captured in the background, so these work even while
+        // another app (e.g. a DAW) owns the foreground.
+        let pressed_edges = sample.buttons & !self.last_pen_buttons;
+        self.last_pen_buttons = sample.buttons;
+        for button in [PenButton::Barrel, PenButton::Eraser] {
+            if pressed_edges & (1 << button.bit()) != 0 {
+                self.on_chord(InputChord::Pen(button));
+            }
+        }
+
         let Some(caps) = self.latest_capabilities.as_ref() else {
             return; // can't process position without axis ranges yet
         };
@@ -339,6 +374,121 @@ impl HudApp {
     fn octave_shift(&mut self, delta: i32) {
         let shifted = i32::from(self.mapping.low_note) + delta * 12;
         self.mapping.low_note = shifted.clamp(0, 96) as u8;
+    }
+
+    /// Step the scale through the picker order by `delta`.
+    fn step_scale(&mut self, delta: i32) {
+        let all = ScaleKind::ALL;
+        let current = all
+            .iter()
+            .position(|s| *s == self.mapping.scale)
+            .unwrap_or(0) as i32;
+        let next = (current + delta).rem_euclid(all.len() as i32) as usize;
+        self.mapping.scale = all[next];
+    }
+
+    // ── Actions & keybindings ─────────────────────────────────────────────
+
+    /// Handle one input chord: while the settings window is listening, the
+    /// chord becomes the new binding; otherwise the bound action runs.
+    fn on_chord(&mut self, chord: InputChord) {
+        if let Some(action) = self.listening.take() {
+            let displaced = self.settings.keymap.bind(chord, action);
+            self.settings_status = Some(match displaced {
+                Some(old) => format!(
+                    "{} → {} (moved from {})",
+                    chord.label(),
+                    action.label(),
+                    old.label()
+                ),
+                None => format!("{} → {}", chord.label(), action.label()),
+            });
+            self.save_settings();
+            return;
+        }
+        if let Some(action) = self.settings.keymap.resolve(&chord) {
+            self.execute_action(action);
+        }
+    }
+
+    /// Run one action. UI buttons dispatch through here too, so a binding and
+    /// its button can never drift apart.
+    pub(crate) fn execute_action(&mut self, action: Action) {
+        match action {
+            Action::Panic => self.panic_all_notes_off(),
+            Action::TestNote => {
+                if self.midi.is_connected() {
+                    self.send_test_note();
+                }
+            }
+            Action::OctaveUp => self.octave_shift(1),
+            Action::OctaveDown => self.octave_shift(-1),
+            Action::ScaleNext => self.step_scale(1),
+            Action::ScalePrev => self.step_scale(-1),
+            Action::KeyNext => self.mapping.key = (self.mapping.key + 1) % 12,
+            Action::KeyPrev => self.mapping.key = (self.mapping.key + 11) % 12,
+            Action::CycleNoteMode => {
+                let all = NoteMode::ALL;
+                let current = all.iter().position(|m| *m == self.mapping.mode).unwrap_or(0);
+                self.mapping.mode = all[(current + 1) % all.len()];
+            }
+            Action::ToggleXToCc74 => self.mapping.x_to_cc74 = !self.mapping.x_to_cc74,
+            Action::TogglePressure => {
+                self.mapping.pressure_to_channel_pressure =
+                    !self.mapping.pressure_to_channel_pressure;
+            }
+            Action::ToggleTiltCc => {
+                // Same default the sidebar checkbox creates: tilt X → mod wheel.
+                self.mapping.tilt_cc = match self.mapping.tilt_cc {
+                    Some(_) => None,
+                    None => Some(TiltCc {
+                        controller: 1,
+                        axis: TiltAxis::X,
+                        range_deg: 60.0,
+                    }),
+                };
+            }
+            Action::MidiConnect => match self.midi.connect_index(self.selected_port) {
+                Ok(()) => self.after_connect(),
+                Err(error) => {
+                    self.midi_status = Some((format!("connect failed: {error}"), true));
+                }
+            },
+            Action::MidiDisconnect => {
+                if self.midi.is_connected() {
+                    self.panic_all_notes_off();
+                    self.midi.disconnect();
+                    self.midi_status = Some(("disconnected".to_owned(), false));
+                }
+            }
+            Action::RefreshPorts => self.refresh_midi_ports(),
+            Action::LoadMapping => self.load_mapping(),
+            Action::SaveMapping => self.save_mapping(),
+            Action::ToggleSettings => self.settings_open = !self.settings_open,
+        }
+    }
+
+    /// Tooltip for a button mirroring an action: the action label plus its
+    /// current binding, so hover text stays correct after rebinding.
+    fn action_hover(&self, action: Action) -> String {
+        match self.settings.keymap.binding_for(action) {
+            Some(chord) => format!("{} ({})", action.label(), chord.label()),
+            None => action.label().to_owned(),
+        }
+    }
+
+    /// Persist settings; best-effort (the keymap also saves on exit).
+    pub(crate) fn save_settings(&mut self) {
+        if let Err(error) = self.settings.save() {
+            eprintln!("failed to save HUD settings: {error}");
+        }
+    }
+
+    /// A tablet ExpressKey edge from the stream; presses feed the keymap.
+    fn handle_tablet_button(&mut self, index: u8, pressed: bool) {
+        if pressed {
+            self.on_chord(InputChord::Tablet { index });
+        }
     }
 
     /// Connect MIDI and push the MPE setup messages so the receiver enters MPE
@@ -463,15 +613,10 @@ impl HudApp {
                     }
                 });
             if ui.button("⟳").on_hover_text("Refresh the port list").clicked() {
-                self.refresh_midi_ports();
+                self.execute_action(Action::RefreshPorts);
             }
             if ui.button("Connect").clicked() {
-                match self.midi.connect_index(self.selected_port) {
-                    Ok(()) => self.after_connect(),
-                    Err(error) => {
-                        self.midi_status = Some((format!("connect failed: {error}"), true));
-                    }
-                }
+                self.execute_action(Action::MidiConnect);
             }
             if MidiOut::virtual_supported() && ui.button("Virtual port").clicked() {
                 match self.midi.connect_virtual() {
@@ -482,26 +627,29 @@ impl HudApp {
                 }
             }
             if self.midi.is_connected() && ui.button("Disconnect").clicked() {
-                self.panic_all_notes_off();
-                self.midi.disconnect();
-                self.midi_status = Some(("disconnected".to_owned(), false));
+                self.execute_action(Action::MidiDisconnect);
             }
             ui.separator();
             if ui
                 .button("Panic")
-                .on_hover_text("Release everything: NoteOff + All-Notes-Off sweep (Esc)")
+                .on_hover_text(self.action_hover(Action::Panic))
                 .clicked()
             {
-                self.panic_all_notes_off();
+                self.execute_action(Action::Panic);
             }
             if ui
                 .add_enabled(self.midi.is_connected(), egui::Button::new("Test note"))
-                .on_hover_text(
-                    "Send a loud middle-C on the master channel to verify audio output (T)",
-                )
+                .on_hover_text(self.action_hover(Action::TestNote))
                 .clicked()
             {
-                self.send_test_note();
+                self.execute_action(Action::TestNote);
+            }
+            if ui
+                .button("⚙ Settings")
+                .on_hover_text(self.action_hover(Action::ToggleSettings))
+                .clicked()
+            {
+                self.execute_action(Action::ToggleSettings);
             }
 
             // Right-aligned tx counter + rate.
@@ -567,17 +715,17 @@ impl HudApp {
                 ui.horizontal(|ui| {
                     if ui
                         .button("− oct")
-                        .on_hover_text("Shift the grid down an octave (PageDown)")
+                        .on_hover_text(self.action_hover(Action::OctaveDown))
                         .clicked()
                     {
-                        self.octave_shift(-1);
+                        self.execute_action(Action::OctaveDown);
                     }
                     if ui
                         .button("+ oct")
-                        .on_hover_text("Shift the grid up an octave (PageUp)")
+                        .on_hover_text(self.action_hover(Action::OctaveUp))
                         .clicked()
                     {
-                        self.octave_shift(1);
+                        self.execute_action(Action::OctaveUp);
                     }
                     ui.colored_label(theme::ACCENT_DIM, note_label(self.mapping.low_note));
                 });
@@ -731,10 +879,10 @@ impl HudApp {
                 ui.text_edit_singleline(&mut self.mapping_path_text);
                 ui.horizontal(|ui| {
                     if ui.button("Load").clicked() {
-                        self.load_mapping();
+                        self.execute_action(Action::LoadMapping);
                     }
                     if ui.button("Save").clicked() {
-                        self.save_mapping();
+                        self.execute_action(Action::SaveMapping);
                     }
                 });
                 if let Some(status) = &self.mapping_status {
@@ -1105,32 +1253,50 @@ impl eframe::App for HudApp {
             }
         }
 
-        // Keyboard shortcuts (skipped while a text field has focus).
+        // Keyboard chords → keymap dispatch (or binding capture while the
+        // settings window is listening).
         let typing = ui.ctx().egui_wants_keyboard_input();
-        let (esc, test, page_up, page_down) = ui.ctx().input(|i| {
-            (
-                i.key_pressed(egui::Key::Escape),
-                i.key_pressed(egui::Key::T),
-                i.key_pressed(egui::Key::PageUp),
-                i.key_pressed(egui::Key::PageDown),
-            )
+        let key_events: Vec<(egui::Key, egui::Modifiers)> = ui.ctx().input(|i| {
+            i.events
+                .iter()
+                .filter_map(|event| match event {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        repeat: false,
+                        modifiers,
+                        ..
+                    } => Some((*key, *modifiers)),
+                    _ => None,
+                })
+                .collect()
         });
-        if esc {
-            self.panic_all_notes_off();
-        }
-        if !typing {
-            if test && self.midi.is_connected() {
-                self.send_test_note();
+        let escape = InputChord::key(egui::Key::Escape);
+        for (key, modifiers) in key_events {
+            let chord = InputChord::Key {
+                key,
+                ctrl: modifiers.ctrl,
+                shift: modifiers.shift,
+                alt: modifiers.alt,
+            };
+            // While listening, a bare Escape cancels instead of binding.
+            if self.listening.is_some() && chord == escape {
+                self.listening = None;
+                self.settings_status = Some("binding cancelled".to_owned());
+                continue;
             }
-            if page_up {
-                self.octave_shift(1);
+            // While a text field has focus only the bare-Escape chord stays
+            // live (the legacy always-on panic shortcut); everything else is
+            // the user typing.
+            if typing && chord != escape {
+                continue;
             }
-            if page_down {
-                self.octave_shift(-1);
-            }
+            self.on_chord(chord);
         }
 
         egui::Panel::top("hud_top").show_inside(ui, |ui| self.draw_top_bar(ui));
+
+        self.draw_settings_window(ui.ctx());
 
         egui::Panel::left("hud_sidebar")
             .resizable(true)
@@ -1164,6 +1330,7 @@ impl eframe::App for HudApp {
         if let Err(error) = self.prefs.save() {
             eprintln!("failed to save HUD prefs: {error}");
         }
+        self.save_settings();
 
         // Silence anything still sounding, then stop the reader thread (and
         // reap a `--spawn`ed producer).

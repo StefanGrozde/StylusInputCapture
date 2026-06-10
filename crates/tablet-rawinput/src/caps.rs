@@ -50,6 +50,18 @@ impl AxisRange {
     }
 }
 
+/// What a device profile captures: the pen/digitizer stream itself, or the
+/// tablet's **pad** collection (ExpressKeys / touch ring buttons) which only
+/// produces `TabletButton` events.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub enum ProfileKind {
+    /// A pen/digitizer collection decoded to `PenSample`s.
+    #[default]
+    Pen,
+    /// A tablet pad collection decoded to `TabletButton` events.
+    Pad,
+}
+
 /// Pure description of a digitizer's HID capabilities.
 ///
 /// Value usages are `Some(range)` when present in the report descriptor and
@@ -57,10 +69,21 @@ impl AxisRange {
 /// handles, so it (and everything that consumes it) is testable without hardware.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProfileCaps {
+    /// Whether this profile is a pen/digitizer or a tablet-pad collection.
+    pub kind: ProfileKind,
+    /// For [`ProfileKind::Pad`] profiles: every input button usage the pad
+    /// declares, as sorted `(usage_page, usage)` pairs. A button's stable
+    /// per-device ordinal (the `index` in `TabletButton` events) is its
+    /// position in this list.
+    pub pad_buttons: Vec<(u16, u16)>,
+
     /// Human-readable / interface-path device name.
     pub device_name: String,
     /// Best-effort driver/HID version string.
     pub driver_version: String,
+    /// USB vendor id, used to associate pad collections with their tablet
+    /// (`0` when unknown).
+    pub vendor_id: u16,
 
     /// X position (Generic Desktop 0x30).
     pub x: Option<AxisRange>,

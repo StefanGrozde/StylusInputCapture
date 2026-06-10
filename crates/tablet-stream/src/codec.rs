@@ -1,7 +1,7 @@
 use crate::error::StreamError;
 use crate::message::{
     Format, Metrics, StreamMessage, KIND_CAPABILITIES, KIND_HEARTBEAT, KIND_METRICS,
-    KIND_PROXIMITY, KIND_SAMPLE,
+    KIND_PROXIMITY, KIND_SAMPLE, KIND_TABLET_BUTTON,
 };
 use serde::{Deserialize, Serialize};
 use tablet_core::{DeviceCapabilities, PenSample};
@@ -15,6 +15,13 @@ use tablet_core::{DeviceCapabilities, PenSample};
 struct ProximityPayload {
     in_range: bool,
     tool_serial: u64,
+}
+
+/// Thin wrapper used for `TabletButton` postcard encoding.
+#[derive(Serialize, Deserialize)]
+struct TabletButtonPayload {
+    index: u8,
+    pressed: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +66,15 @@ pub fn encode_payload(msg: &StreamMessage, format: Format) -> Result<(u8, Vec<u8
             Ok((KIND_METRICS, bytes))
         }
         (StreamMessage::Heartbeat, Format::Postcard) => Ok((KIND_HEARTBEAT, Vec::new())),
+        (StreamMessage::TabletButton { index, pressed }, Format::Postcard) => {
+            let payload = TabletButtonPayload {
+                index: *index,
+                pressed: *pressed,
+            };
+            let bytes =
+                postcard::to_allocvec(&payload).map_err(|e| StreamError::Encode(e.to_string()))?;
+            Ok((KIND_TABLET_BUTTON, bytes))
+        }
 
         // ── JSON ──────────────────────────────────────────────────────────
         (StreamMessage::Capabilities(caps), Format::Json) => {
@@ -91,6 +107,15 @@ pub fn encode_payload(msg: &StreamMessage, format: Format) -> Result<(u8, Vec<u8
             Ok((KIND_METRICS, bytes))
         }
         (StreamMessage::Heartbeat, Format::Json) => Ok((KIND_HEARTBEAT, Vec::new())),
+        (StreamMessage::TabletButton { index, pressed }, Format::Json) => {
+            let payload = serde_json::json!({
+                "index": index,
+                "pressed": pressed,
+            });
+            let bytes =
+                serde_json::to_vec(&payload).map_err(|e| StreamError::Encode(e.to_string()))?;
+            Ok((KIND_TABLET_BUTTON, bytes))
+        }
     }
 }
 
@@ -126,6 +151,14 @@ pub fn decode_payload(
             Ok(StreamMessage::Metrics(metrics))
         }
         (KIND_HEARTBEAT, Format::Postcard) => Ok(StreamMessage::Heartbeat),
+        (KIND_TABLET_BUTTON, Format::Postcard) => {
+            let p: TabletButtonPayload =
+                postcard::from_bytes(bytes).map_err(|e| StreamError::Decode(e.to_string()))?;
+            Ok(StreamMessage::TabletButton {
+                index: p.index,
+                pressed: p.pressed,
+            })
+        }
 
         // ── JSON ──────────────────────────────────────────────────────────
         (KIND_CAPABILITIES, Format::Json) => {
@@ -157,6 +190,14 @@ pub fn decode_payload(
             Ok(StreamMessage::Metrics(metrics))
         }
         (KIND_HEARTBEAT, Format::Json) => Ok(StreamMessage::Heartbeat),
+        (KIND_TABLET_BUTTON, Format::Json) => {
+            let p: TabletButtonPayload =
+                serde_json::from_slice(bytes).map_err(|e| StreamError::Decode(e.to_string()))?;
+            Ok(StreamMessage::TabletButton {
+                index: p.index,
+                pressed: p.pressed,
+            })
+        }
 
         // ── Unknown kind ─────────────────────────────────────────────────
         (k, _) => Err(StreamError::UnknownKind(k)),
@@ -306,6 +347,28 @@ mod tests {
     #[test]
     fn json_metrics_roundtrip() {
         roundtrip(&StreamMessage::Metrics(make_metrics()), Format::Json);
+    }
+
+    #[test]
+    fn postcard_tablet_button_roundtrip() {
+        roundtrip(
+            &StreamMessage::TabletButton {
+                index: 3,
+                pressed: true,
+            },
+            Format::Postcard,
+        );
+    }
+
+    #[test]
+    fn json_tablet_button_roundtrip() {
+        roundtrip(
+            &StreamMessage::TabletButton {
+                index: 7,
+                pressed: false,
+            },
+            Format::Json,
+        );
     }
 
     #[test]
