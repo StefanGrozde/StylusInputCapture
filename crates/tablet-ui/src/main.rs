@@ -3,8 +3,6 @@ mod calibration;
 mod cli;
 mod panels;
 mod prefs;
-mod source;
-mod spawn;
 
 use eframe::egui;
 

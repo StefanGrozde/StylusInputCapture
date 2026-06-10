@@ -30,7 +30,10 @@ silently.
 | `tablet-wintab`   | Legacy Wintab backend — *deprecated for capture* (foreground-only); opt-in `backend-wintab`. |
 | `tablet-stream`   | WCAP wire format, framing, transports (stdout / TCP / named pipe). |
 | `tablet-cli`      | The capture binary (clap args, TOML config, lifecycle, tracing, metrics). |
+| `tablet-consumer` | Shared stream-ingestion (reader thread, reconnect, `--spawn`) used by every consumer app. |
 | `tablet-process` / `tablet-ui` | Calibration & visualization consumer (`SPEC_CUI.md`). |
+| `tablet-midi`     | Pure MPE mapping library: pen → MIDI Polyphonic Expression events. No I/O. |
+| `tablet-hud`      | MPE MIDI-controller HUD (`midir` output) — play the pen as an instrument. |
 
 Data flow:
 
@@ -62,6 +65,57 @@ cargo run -p tablet-cli -- --transport tcp --format json
   `cargo run -p tablet-cli --no-default-features --features backend-wintab`.
 
 On non-Windows targets the CLI falls back to the mock backend (no hardware).
+
+## MPE MIDI HUD (`tablet-hud`)
+
+Turn the pen into an expressive [MPE](https://www.midi.org/midi-articles/midi-polyphonic-expression-mpe)
+instrument: horizontal position → **pitch** (snapped to a selectable scale/key),
+vertical position → **CC74** (timbre), pen pressure → **channel pressure**, each
+note on its own MPE member channel. The mapping logic lives in the pure
+`tablet-midi` crate; `tablet-hud` is the egui app (top bar / mapping sidebar /
+playing surface) that reads the stream and drives MIDI via
+[`midir`](https://crates.io/crates/midir).
+
+```powershell
+# Spawn the capturer and play, picking a MIDI port (or "Virtual port") in the top bar:
+cargo run -p tablet-hud -- --spawn
+
+# Or connect to a capturer streaming over TCP:
+cargo run -p tablet-cli -- --transport tcp        # producer
+cargo run -p tablet-hud -- --tcp 127.0.0.1:9123   # HUD
+```
+
+- **Virtual ports** are created on macOS/Linux; on **Windows** install a
+  loopback driver (e.g. [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html))
+  and connect to its port instead. The built-in **Microsoft GS Wavetable Synth**
+  ignores MPE (per-channel pitch bend / CC74), so it will not sound correct —
+  route to an MPE-capable synth such as [Surge XT](https://surge-synthesizer.github.io/).
+- On Linux the `midir` backend needs ALSA dev headers (`libasound2-dev`). Build
+  without MIDI output (`--no-default-features`) to compile the HUD on systems
+  that lack them.
+
+### Routing MPE to Surge XT (Windows + loopMIDI)
+
+1. Install [loopMIDI](https://www.tobias-erichsen.de/software/loopmidi.html) and
+   create a port (e.g. `tablet-hud`).
+2. Start the HUD and connect to that port (dropdown auto-refreshes when opened;
+   the last-used port is remembered across runs):
+   ```powershell
+   cargo run -p tablet-hud -- --spawn --midi-port tablet-hud
+   ```
+   Or pick the port manually in the top bar and click **Connect** — the app sends
+   MPE setup messages automatically.
+3. In **Surge XT** standalone: set **MIDI input** to the same loopMIDI port and
+   enable **MPE** (Menu → MPE, or the MPE button).
+4. Match Surge XT's **pitch-bend range** to the HUD sidebar value **bend range
+   (st)** (default **48** semitones). A mismatch makes vertical pen motion sound
+   out of tune.
+5. Click **Test note** in the HUD top bar to verify audio, then play the pad
+   surface.
+
+**Manual verification (not automated):** confirm Surge XT receives MPE from the
+HUD after the steps above — pen pressure, per-note pitch bend, and CC74 should
+all respond on separate member channels.
 
 ## Fidelity notes (Raw Input backend)
 

@@ -5,6 +5,8 @@ use tablet_core::{DeviceCapabilities, PenSample};
 use tablet_process::{CalibrationProfile, ProcessedSample, ProcessorState};
 use tablet_stream::{Format, Metrics, StreamMessage};
 
+use tablet_consumer::{spawn_producer, ConnectionStatus, SourceHandle, SourceState, SpawnOptions};
+
 use crate::calibration::GeometryCalibration;
 use crate::cli::{format_label, Args, Source};
 use crate::panels::calibration::{
@@ -18,8 +20,6 @@ use crate::panels::telemetry::{
 };
 use crate::panels::trace::{draw_trace_panel, raw_mapped_point, TraceHistory, TracePoint};
 use crate::prefs::UiPrefs;
-use crate::source::{ConnectionStatus, SourceHandle, SourceState};
-use crate::spawn::{spawn_producer, SpawnOptions};
 
 const EVENT_LOG_CAPACITY: usize = 256;
 

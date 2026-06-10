@@ -1,0 +1,390 @@
+diff --git a/crates/tablet-hud/src/app.rs b/crates/tablet-hud/src/app.rs
+index 641064a..27a49aa 100644
+--- a/crates/tablet-hud/src/app.rs
++++ b/crates/tablet-hud/src/app.rs
+@@ -11,7 +11,11 @@
+ //! revision can move emission onto a dedicated thread fed by the ring for
+ //! lower jitter without touching the mapping logic.
+ 
+-use std::{collections::VecDeque, path::PathBuf};
++use std::{
++    collections::VecDeque,
++    path::PathBuf,
++    time::{Duration, Instant},
++};
+ 
+ use eframe::egui::{self, Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Vec2};
+ use tablet_consumer::{
+@@ -19,7 +23,7 @@ use tablet_consumer::{
+ };
+ use tablet_core::{DeviceCapabilities, PenSample};
+ use tablet_midi::{
+-    MidiEvent, MidiMapping, MpeEngine, ScaleKind, VelocitySource, PITCH_CLASS_NAMES,
++    MidiEvent, MidiMapping, MpeEngine, NoteMode, ScaleKind, VelocitySource, PITCH_CLASS_NAMES,
+ };
+ use tablet_process::{CalibrationProfile, ProcessedSample, ProcessorState};
+ use tablet_stream::{Format, StreamMessage};
+@@ -63,6 +67,13 @@ pub struct HudApp {
+     midi_ports: Vec<String>,
+     selected_port: usize,
+     midi_status: Option<String>,
++    /// Running count of MIDI events actually sent to a connected port — a live
++    /// "is anything leaving the app?" indicator in the top bar.
++    events_sent: u64,
++    /// A manually-triggered diagnostic note awaiting its NoteOff: (channel,
++    /// note, deadline). Sent on the master channel at a loud fixed velocity so
++    /// it's audible on any synth regardless of the pen / velocity mapping.
++    test_note: Option<(u8, u8, Instant)>,
+ 
+     history: VecDeque<HudPoint>,
+ }
+@@ -132,6 +143,8 @@ impl HudApp {
+             midi_ports: MidiOut::list_ports(),
+             selected_port: 0,
+             midi_status: None,
++            events_sent: 0,
++            test_note: None,
+             history: VecDeque::with_capacity(HISTORY_CAPACITY),
+         }
+     }
+@@ -172,6 +185,9 @@ impl HudApp {
+         for event in &self.events_scratch {
+             self.midi.send(event);
+         }
++        if self.midi.is_connected() {
++            self.events_sent += self.events_scratch.len() as u64;
++        }
+ 
+         if self.history.len() == HISTORY_CAPACITY {
+             self.history.pop_front();
+@@ -207,6 +223,7 @@ impl HudApp {
+     }
+ 
+     fn panic_all_notes_off(&mut self) {
++        self.end_test_note();
+         self.events_scratch.clear();
+         self.engine
+             .all_notes_off(&self.mapping, &mut self.events_scratch);
+@@ -215,6 +232,48 @@ impl HudApp {
+         }
+     }
+ 
++    /// Fire a fixed, loud middle-C on the master channel to prove the MIDI path
++    /// end to end, independent of the pen and the velocity mapping. Its NoteOff
++    /// is sent shortly after by [`service_test_note`].
++    fn send_test_note(&mut self) {
++        // Release any previous, still-pending test note first.
++        self.end_test_note();
++        let channel = self.mapping.mpe.master_channel;
++        let note = 60; // middle C
++        self.midi.send(&MidiEvent::NoteOn {
++            channel,
++            note,
++            velocity: 100,
++        });
++        self.events_sent += 1;
++        self.test_note = Some((channel, note, Instant::now() + Duration::from_millis(500)));
++    }
++
++    /// Send the pending test note's NoteOff once its deadline passes.
++    fn service_test_note(&mut self) {
++        if let Some((channel, note, deadline)) = self.test_note {
++            if Instant::now() >= deadline {
++                self.midi.send(&MidiEvent::NoteOff {
++                    channel,
++                    note,
++                    velocity: 0,
++                });
++                self.events_sent += 1;
++                self.test_note = None;
++            }
++        }
++    }
++
++    fn end_test_note(&mut self) {
++        if let Some((channel, note, _)) = self.test_note.take() {
++            self.midi.send(&MidiEvent::NoteOff {
++                channel,
++                note,
++                velocity: 0,
++            });
++        }
++    }
++
+     // ── Panels ────────────────────────────────────────────────────────────
+ 
+     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
+@@ -271,6 +330,15 @@ impl HudApp {
+             if ui.button("Panic").clicked() {
+                 self.panic_all_notes_off();
+             }
++            if ui
++                .add_enabled(self.midi.is_connected(), egui::Button::new("Test note"))
++                .on_hover_text("Send a loud middle-C on the master channel to verify audio output")
++                .clicked()
++            {
++                self.send_test_note();
++            }
++            ui.separator();
++            ui.label(format!("tx: {}", self.events_sent));
+         });
+ 
+         if let Some(status) = &self.midi_status {
+@@ -302,7 +370,14 @@ impl HudApp {
+             });
+         ui.add(egui::Slider::new(&mut self.mapping.low_note, 0..=96).text("low note"));
+         ui.add(egui::Slider::new(&mut self.mapping.span_notes, 1..=48).text("span (semitones)"));
+-        ui.checkbox(&mut self.mapping.glide, "glide (pitch-bend between notes)");
++        ui.label("Note motion (what dragging sideways does)");
++        egui::ComboBox::from_id_salt("note_mode")
++            .selected_text(self.mapping.mode.label())
++            .show_ui(ui, |ui| {
++                for mode in NoteMode::ALL {
++                    ui.selectable_value(&mut self.mapping.mode, mode, mode.label());
++                }
++            });
+         ui.separator();
+ 
+         // ── MPE ──
+@@ -574,6 +649,7 @@ impl eframe::App for HudApp {
+         // Live stream: repaint every frame so we keep draining and animating.
+         ui.ctx().request_repaint();
+         self.drain_source();
++        self.service_test_note();
+ 
+         egui::Panel::top("hud_top").show_inside(ui, |ui| self.draw_top_bar(ui));
+ 
+diff --git a/crates/tablet-midi/src/engine.rs b/crates/tablet-midi/src/engine.rs
+index 15a4590..927b92d 100644
+--- a/crates/tablet-midi/src/engine.rs
++++ b/crates/tablet-midi/src/engine.rs
+@@ -17,7 +17,7 @@
+ use tablet_process::ProcessedSample;
+ 
+ use crate::event::{MidiEvent, CC_ALL_NOTES_OFF, CC_TIMBRE, PITCH_BEND_CENTER};
+-use crate::mapping::{MidiMapping, TiltAxis, VelocitySource};
++use crate::mapping::{MidiMapping, NoteMode, TiltAxis, VelocitySource};
+ use crate::scale::{self, QuantizedPitch};
+ 
+ /// The note currently sounding and the member channel carrying it.
+@@ -105,7 +105,8 @@ impl MpeEngine {
+         self.reset_expression();
+     }
+ 
+-    /// Held note: either glide via pitch-bend or retrigger on a new scale note.
++    /// Held note: behaviour depends on [`NoteMode`] — sustain the struck pitch,
++    /// glide via pitch-bend, or retrigger on each new scale note.
+     fn continue_note(
+         &mut self,
+         s: &ProcessedSample,
+@@ -114,17 +115,25 @@ impl MpeEngine {
+         voice: Voice,
+         out: &mut Vec<MidiEvent>,
+     ) {
+-        if m.glide {
+-            // Keep one note and bend toward the exact pointed pitch. If the
+-            // required bend exceeds the configured range, retrigger on the
+-            // snapped note to re-center.
+-            let bend = q.continuous - f64::from(voice.note);
+-            if bend.abs() > m.mpe.pitch_bend_range_semitones {
+-                self.retrigger(s, m, q.note, out);
++        match m.mode {
++            // Sustain: the struck pitch is latched; sideways movement never
++            // changes the note (only expression, in `emit_expression`).
++            NoteMode::Hold => {}
++            NoteMode::Glide => {
++                // Keep one note and bend toward the exact pointed pitch. If the
++                // required bend exceeds the configured range, retrigger on the
++                // snapped note to re-center.
++                let bend = q.continuous - f64::from(voice.note);
++                if bend.abs() > m.mpe.pitch_bend_range_semitones {
++                    self.retrigger(s, m, q.note, out);
++                }
++            }
++            NoteMode::Discrete => {
++                if q.note != voice.note {
++                    // Discrete keyboard: each new scale note retriggers.
++                    self.retrigger(s, m, q.note, out);
++                }
+             }
+-        } else if q.note != voice.note {
+-            // Discrete keyboard: each new scale note retriggers.
+-            self.retrigger(s, m, q.note, out);
+         }
+     }
+ 
+@@ -164,11 +173,11 @@ impl MpeEngine {
+         // Pitch bend: residual to the exact pointed pitch (relative to the
+         // held note), clamped to the configured range.
+         let q = scale::quantize(s.x, m.low_note, m.span_notes, m.scale, m.key);
+-        let bend_semitones = if m.glide {
+-            q.continuous - f64::from(voice.note)
+-        } else {
+-            // Discrete mode: snap exactly to the note (no expressive bend).
+-            0.0
++        let bend_semitones = match m.mode {
++            // Glide bends toward the exact pointed pitch.
++            NoteMode::Glide => q.continuous - f64::from(voice.note),
++            // Hold and Discrete keep the struck pitch (no expressive bend).
++            NoteMode::Hold | NoteMode::Discrete => 0.0,
+         };
+         let bend = bend_value(bend_semitones, m.mpe.pitch_bend_range_semitones);
+         if self.last_bend != Some(bend) {
+@@ -338,12 +347,13 @@ mod tests {
+     }
+ 
+     fn mapping() -> MidiMapping {
+-        // Chromatic, key C, 48..72, discrete (no glide) for predictable notes.
++        // Chromatic, key C, 48..72, keyboard mode for predictable per-note
++        // retrigger behaviour in the tests.
+         let mut m = MidiMapping::default();
+         m.scale = ScaleKind::Chromatic;
+         m.span_notes = 24;
+         m.low_note = 48;
+-        m.glide = false;
++        m.mode = NoteMode::Discrete;
+         m
+     }
+ 
+@@ -422,6 +432,44 @@ mod tests {
+         assert_eq!(e.active_note(), Some(60));
+     }
+ 
++    #[test]
++    fn hold_mode_sustains_one_note_while_moving() {
++        let mut e = MpeEngine::new();
++        let mut m = mapping();
++        m.mode = NoteMode::Hold;
++        let mut out = Vec::new();
++
++        e.process(&sample(0.0, 0.5, 0.8, true), &m, &mut out); // strike note 48
++        let on_channel = e.voice.unwrap().channel;
++        out.clear();
++
++        // Sweep all the way across the surface: the note must not change and no
++        // NoteOff/NoteOn may fire — only expression (CC74) tracks the movement.
++        for x in [0.25, 0.5, 0.75, 1.0] {
++            e.process(&sample(x, 0.5, 0.8, true), &m, &mut out);
++        }
++        assert_eq!(e.active_note(), Some(48), "pitch must stay latched");
++        assert!(
++            !out.iter().any(|ev| matches!(
++                ev,
++                MidiEvent::NoteOn { .. } | MidiEvent::NoteOff { .. }
++            )),
++            "hold mode must not retrigger while moving, got {out:?}"
++        );
++
++        // Pen up releases the single sustained note.
++        out.clear();
++        e.process(&sample(1.0, 0.5, 0.0, false), &m, &mut out);
++        assert_eq!(
++            out,
++            vec![MidiEvent::NoteOff {
++                channel: on_channel,
++                note: 48,
++                velocity: 0
++            }]
++        );
++    }
++
+     #[test]
+     fn y_drives_cc74_and_pressure_drives_channel_pressure_on_change_only() {
+         let mut e = MpeEngine::new();
+diff --git a/crates/tablet-midi/src/lib.rs b/crates/tablet-midi/src/lib.rs
+index 772ebf8..140e94b 100644
+--- a/crates/tablet-midi/src/lib.rs
++++ b/crates/tablet-midi/src/lib.rs
+@@ -18,5 +18,7 @@ pub mod scale;
+ 
+ pub use engine::MpeEngine;
+ pub use event::{MidiBytes, MidiEvent, CC_ALL_NOTES_OFF, CC_TIMBRE, PITCH_BEND_CENTER};
+-pub use mapping::{MappingError, MidiMapping, MpeConfig, TiltAxis, TiltCc, VelocitySource};
++pub use mapping::{
++    MappingError, MidiMapping, MpeConfig, NoteMode, TiltAxis, TiltCc, VelocitySource,
++};
+ pub use scale::{quantize, QuantizedPitch, ScaleKind, PITCH_CLASS_NAMES};
+diff --git a/crates/tablet-midi/src/mapping.rs b/crates/tablet-midi/src/mapping.rs
+index c996c1f..d4d36c5 100644
+--- a/crates/tablet-midi/src/mapping.rs
++++ b/crates/tablet-midi/src/mapping.rs
+@@ -57,7 +57,46 @@ pub enum VelocitySource {
+ 
+ impl Default for VelocitySource {
+     fn default() -> Self {
+-        VelocitySource::Pressure { min: 1, max: 127 }
++        // A floor well above 1: at the instant a note is struck the pen
++        // pressure is often near zero, and a velocity of ~1 is inaudible on
++        // most synths (notably the Windows GS Wavetable). 40 keeps the attack
++        // audible while still leaving room for pressure-driven dynamics.
++        VelocitySource::Pressure { min: 40, max: 127 }
++    }
++}
++
++/// How horizontal pen movement behaves *after* a note is struck.
++///
++/// Pen-down always strikes the in-scale note under the pen. What dragging the
++/// pen sideways does next is the difference between an instrument that sustains
++/// one note and one that fires a stream of notes:
++#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
++pub enum NoteMode {
++    /// **Sustain (default).** The struck pitch is latched for as long as the pen
++    /// is down; moving sideways does *not* change the note. Only Y (timbre) and
++    /// pressure (aftertouch) shape the held sound — "press a note and play it."
++    #[default]
++    Hold,
++    /// **Glide.** One note is struck, then its pitch slides continuously toward
++    /// the pointed pitch via MPE pitch-bend (theremin-like). The note only
++    /// retriggers if the required bend exceeds the configured bend range.
++    Glide,
++    /// **Keyboard.** Every in-scale note the pen crosses retriggers a new note
++    /// (NoteOff the old, NoteOn the new). Good for fast runs, not for sustain.
++    Discrete,
++}
++
++impl NoteMode {
++    /// All variants in display order, for UI pickers.
++    pub const ALL: [NoteMode; 3] = [NoteMode::Hold, NoteMode::Glide, NoteMode::Discrete];
++
++    /// Short human-readable label.
++    pub fn label(self) -> &'static str {
++        match self {
++            NoteMode::Hold => "Hold (sustain one note)",
++            NoteMode::Glide => "Glide (bend between notes)",
++            NoteMode::Discrete => "Keyboard (retrigger per note)",
++        }
+     }
+ }
+ 
+@@ -93,9 +132,10 @@ pub struct MidiMapping {
+     pub low_note: u8,
+     /// Number of semitones spanned across the surface (`x = 0 → 1`).
+     pub span_notes: u8,
+-    /// When true, moving across pitch glides via pitch-bend (re-centering when
+-    /// the bend range is exceeded); when false, each scale note retriggers.
+-    pub glide: bool,
++    /// What dragging the pen sideways does after a note is struck (sustain /
++    /// glide / retrigger). Defaults to [`NoteMode::Hold`].
++    #[serde(default)]
++    pub mode: NoteMode,
+     /// MPE channel layout + pitch-bend range.
+     pub mpe: MpeConfig,
+     /// Note-on velocity source.
+@@ -119,7 +159,7 @@ impl Default for MidiMapping {
+             key: 0,
+             low_note: 48, // C3
+             span_notes: 24, // two octaves
+-            glide: false,
++            mode: NoteMode::Hold,
+             mpe: MpeConfig::default(),
+             velocity: VelocitySource::default(),
+             y_to_cc74: true,
+@@ -300,7 +340,7 @@ mod tests {
+         let mut m = MidiMapping::default();
+         m.name = "round-trip".to_owned();
+         m.scale = ScaleKind::Dorian;
+-        m.glide = true;
++        m.mode = NoteMode::Glide;
+         m.tilt_cc = Some(TiltCc {
+             controller: 1,
+             axis: TiltAxis::X,

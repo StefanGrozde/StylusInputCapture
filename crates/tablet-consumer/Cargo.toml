@@ -1,0 +1,8 @@
+[package]
+name = "tablet-consumer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tablet-core = { path = "../tablet-core" }
+tablet-stream = { path = "../tablet-stream" }
