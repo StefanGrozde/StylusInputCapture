@@ -55,11 +55,13 @@ pub enum Action {
     ToggleSettings,
     /// Toggle expression-driven trail color (HSV) vs fixed accent trail.
     ToggleTrailColor,
+    /// Re-open the pen guide for the pen currently in use.
+    ShowPenGuide,
 }
 
 impl Action {
     /// Every action, in settings-window display order.
-    pub const ALL: [Action; 19] = [
+    pub const ALL: [Action; 20] = [
         Action::Panic,
         Action::TestNote,
         Action::OctaveUp,
@@ -79,6 +81,7 @@ impl Action {
         Action::SaveMapping,
         Action::ToggleSettings,
         Action::ToggleTrailColor,
+        Action::ShowPenGuide,
     ];
 
     /// Stable string id used in `settings.toml`. **Never change an existing
@@ -104,6 +107,7 @@ impl Action {
             Action::SaveMapping => "save_mapping",
             Action::ToggleSettings => "toggle_settings",
             Action::ToggleTrailColor => "toggle_trail_color",
+            Action::ShowPenGuide => "show_pen_guide",
         }
     }
 
@@ -135,6 +139,7 @@ impl Action {
             Action::SaveMapping => "Save mapping file",
             Action::ToggleSettings => "Show/hide settings",
             Action::ToggleTrailColor => "Toggle expression trail color",
+            Action::ShowPenGuide => "Show pen guide",
         }
     }
 
@@ -157,7 +162,7 @@ impl Action {
             | Action::RefreshPorts
             | Action::LoadMapping
             | Action::SaveMapping => "MIDI & files",
-            Action::ToggleSettings | Action::ToggleTrailColor => "App",
+            Action::ToggleSettings | Action::ToggleTrailColor | Action::ShowPenGuide => "App",
         }
     }
 }

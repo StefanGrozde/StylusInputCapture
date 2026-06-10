@@ -33,6 +33,7 @@ use crate::actions::Action;
 use crate::bindings::{InputChord, PenButton};
 use crate::cli::{format_label, source_label, Args};
 use crate::midi_out::{mpe_init_events, MidiOut};
+use crate::pen_guide::{PenSignature, PenTracker};
 use crate::prefs::HudPrefs;
 use crate::settings::HudSettings;
 use crate::theme;
@@ -71,7 +72,7 @@ pub struct HudApp {
     profile: CalibrationProfile,
     processor_state: ProcessorState,
 
-    mapping: MidiMapping,
+    pub(crate) mapping: MidiMapping,
     mapping_path: Option<PathBuf>,
     mapping_path_text: String,
     mapping_status: Option<String>,
@@ -104,7 +105,7 @@ pub struct HudApp {
 
     history: VecDeque<HudPoint>,
 
-    prefs: HudPrefs,
+    pub(crate) prefs: HudPrefs,
     /// Window inner size captured each frame so `on_exit` can persist it.
     last_window_size: Option<(f32, f32)>,
 
@@ -119,6 +120,11 @@ pub struct HudApp {
     pub(crate) settings_status: Option<String>,
     /// Previous `PenSample.buttons` word, for stylus-button edge detection.
     last_pen_buttons: u32,
+
+    /// Debounced pen-change detection feeding the pen-guide modal.
+    pen_tracker: PenTracker,
+    /// Pen the guide modal is currently introducing (`None` = modal closed).
+    pub(crate) pen_guide: Option<PenSignature>,
 }
 
 impl HudApp {
@@ -222,6 +228,8 @@ impl HudApp {
             listening: None,
             settings_status: None,
             last_pen_buttons: 0,
+            pen_tracker: PenTracker::default(),
+            pen_guide: None,
         };
 
         if let Some(substring) = args.midi_port.as_deref() {
@@ -300,6 +308,17 @@ impl HudApp {
         let Some(caps) = self.latest_capabilities.as_ref() else {
             return; // can't process position without axis ranges yet
         };
+
+        // Pen-change detection for the guide modal: a pen fingerprint the
+        // user has never dismissed the guide for opens it.
+        if let Some(sig) = self
+            .pen_tracker
+            .observe(PenSignature::of(&sample, &caps.device_name))
+        {
+            if !self.prefs.seen_pens.contains(&sig) {
+                self.pen_guide = Some(sig);
+            }
+        }
 
         let processed = self
             .profile
@@ -473,6 +492,9 @@ impl HudApp {
                 self.settings.trail_color.enabled = !self.settings.trail_color.enabled;
                 self.save_settings();
             }
+            // Re-open for the pen currently in use; a no-op before the first
+            // pen has been seen this session.
+            Action::ShowPenGuide => self.pen_guide = self.pen_tracker.current().cloned(),
         }
     }
 
@@ -1543,6 +1565,7 @@ impl eframe::App for HudApp {
         egui::Panel::top("hud_top").show_inside(ui, |ui| self.draw_top_bar(ui));
 
         self.draw_settings_window(ui.ctx());
+        self.draw_pen_guide(ui.ctx());
 
         egui::Panel::left("hud_sidebar")
             .resizable(true)

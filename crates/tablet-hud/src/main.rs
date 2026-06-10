@@ -3,6 +3,7 @@ mod app;
 mod bindings;
 mod cli;
 mod midi_out;
+mod pen_guide;
 mod prefs;
 mod settings;
 mod settings_ui;
